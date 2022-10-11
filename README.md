@@ -592,7 +592,7 @@ db.jobs.findOneAndUpdate(
     {
         returnNewDocument: true
     }
-    )
+)
         
 // 작업 다한 프로세스는 완료처리로
 db.jobs.updateOne({type: 'MY_BATCH', status: 'ONGOING'}, {

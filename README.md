@@ -472,3 +472,148 @@ db.users.updateOne({name: 'lee'}, {
     }
 });
 ```
+
+### 요소 제거
+#### pop
+```mongodb-json-query
+// 배열의 처음부터 제거
+db.users.updateOne({}, {$pop: {emails: -1}});
+// 배열의 마지막부터 제거
+db.users.updateOne({}, {$pop: {emails: 1}});
+```
+#### pull
+* 하나의 도큐먼트의 emails 배열에서 일치하는 요소 제거
+* 조건에 부합하는 도큐먼트가 여러개일때 하나가 적용되면 나머지는 무시 됨 (updateOne)
+  * doc1: {emails: '...'}, doc2: {emails: '...'} 일때 doc1만 계속 배열이 지워질거임
+```mongodb-json-query
+db.users.updateOne({}, {$pull: {emails: 'taesu@gmail.com'}})
+```
+* 여러 도큐먼트에 적용하고 싶다면
+```mongodb-json-query
+db.users.updateMany({}, {$pull: {emails: 'taesu@gmail.com'}})
+```
+
+
+### 배열의 위치기반 변경
+* 몇번째 요소인지 모르는 경우 'comments.$.name' 으로 접근 가능하다
+```mongodb-json-query
+db.blog.posts.insertOne({
+    title: 'A post',
+    content: '...',
+    comments: [{
+        name: 'lee taesu',
+        content: 'nice!2awef'
+    }]
+});
+
+db.blog.posts.updateMany({'comments.name': 'lee taesu'}, {
+    $set: {
+        'comments.$.name': 'Lee Tae Su'
+    }
+})
+```
+* arrayFilters를 통해서 조건에 맞는 배열만 변경 가능
+```mongodb-json-query
+// 투표 수가 -5 이하인 댓글은 숨김 처리
+db.blog.posts.updateMany(
+    {'comments.name': 'lee taesu'},
+    {
+        $set: {'comments.$[element].visible': false}  // 각 요소를 element로 선언
+    },
+    {
+        arrayFilters: [{'element.votes': {$lte: -5}}]   // 여기서 사용
+    }
+)
+```
+
+### Upsert
+* 1에 넘긴 인자에 매치하는 도큐먼트 검색
+* 2에 넘긴 오퍼레이션 수행
+* 3에 upsert: true라면 없으면 생성하고 오퍼레이션 수행
+* 애플리케이션 로직으로 upsert를 구현하면 경쟁상태에 빠질 수 있음
+  * UK 등으로 정합성은 보장할 수 있으나 오류가 날 것임
+  * Upsert는 원자적이므로 비교적 안전
+```mongodb-json-query
+db.analytics.updateOne(
+    {url: 'www.taesu2.com',},
+    {$inc: {pageviews: 1}},
+    {upsert: true}
+    )
+```
+
+* 주의, 아래처럼 하면 pageviews: 0인 도큐먼트는 항상 없을 것이므로 매번 도큐먼트가 생성된다
+```mongodb-json-query
+db.analytics.updateOne({url: 'www.taesu2.com', pageviews: 0},
+    {$inc: {pageviews: 1}},
+    {upsert: true}
+    )
+```
+* 도큐먼트 생성과 동시에 필드 설정이 필요하다면 $setOnInsert를 사용할 것
+```mongodb-json-query
+db.analytics.updateOne({url: 'www.taesu3.com',},
+    {
+        $inc: {pageviews: 1},
+        $setOnInsert: {findBy: 'taesu'}
+    },
+    {upsert: true}
+)
+```
+
+### updateMany
+* updateOne과 매개변수는 동일
+* updateOne은 필터에 부합하는 첫번째 도큐먼트만 갱신
+* 필터에 부합하는 모든 도큐먼트 갱신은 updateMany
+* 스키마 변경, 특정 사용자에 새로운 정보 추가 등에 효율적임 
+```mongodb-json-query
+db.users.insertMany(
+    [
+        {name: 'lee', birth: '1993-02-16'},
+        {name: 'lee2', birth: '1991-02-16'},
+    ]
+);
+db.users.updateMany({birth: '1993-02-16'}, {
+    $set: {gift: 'happy birthday pack'}
+})
+```
+
+### findAndGet (수정한 도큐먼트 반환)
+**findOneAndUpdate**
+* set and get을 원자적으로 해야하는 작업에 적합
+* 여러 프로세스 중 락 등이 필요한 경우 아래처럼 
+  * type에 따라 ready 상태인 것을 프로세스 1이 획득 하면서 ongoing으로 변경
+  * 변경 됐다면 return 된것이 있음
+  * 아무것도 없다면 작업 진행하지 않음
+```mongodb-json-query
+db.jobs.findOneAndUpdate(
+    {type: 'MY_BATCH', status: 'READY'},
+    {
+        $set: {status: 'ONGOING'},
+    },
+    {
+        returnNewDocument: true
+    }
+    )
+        
+// 작업 다한 프로세스는 완료처리로
+db.jobs.updateOne({type: 'MY_BATCH', status: 'ONGOING'}, {
+    $set: {status: 'READY'}
+})
+```
+
+**findOneAndReplace**
+* returnNewDocument가 false면 교체 전 도큐먼트
+* returnNewDocument가 true면 교체 후 도큐먼트
+```mongodb-json-query
+db.types.drop()
+db.types.find()
+db.types.insertOne({name: 'type1', when: '111'});
+var type = db.types.findOne({name: 'type1'})
+type.when = '123213'
+db.types.findOneAndReplace({name: 'type1'}, type,
+{
+    returnNewDocument: true
+})
+```
+
+**findOneAndDelete**
+* 삭제된 도큐먼트를 반환

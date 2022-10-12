@@ -617,3 +617,528 @@ db.types.findOneAndReplace({name: 'type1'}, type,
 
 **findOneAndDelete**
 * 삭제된 도큐먼트를 반환
+
+## 쿼리
+### find 기본
+```mongodb-json-query
+db.users.find() == db.users.find({}) // 아무 조건 명시 안하면 빈 쿼리 도큐먼트로 인식
+
+db.users.find({name: 'lee'})  // name이 lee인 도큐먼트를 검색하는 쿼리 도큐먼트
+```
+
+* 반환받을 키 지정을 통해 효율적으로 쿼리할 수 있음
+* ID는 매번 반환 됨
+```mongodb-json-query
+db.users.find({}, {friends: 1, name: 1, birth: 1})
+```
+![img_8.png](img_8.png)
+
+* friends를 제외한 나머지를 쿼리 할수도 있음
+```mongodb-json-query
+db.users.find({}, {friends: 0})
+```
+
+* 쿼리 도큐먼트의 값은 반드시 상수이어야 함
+* 아래처럼 name과 username 값이 같은 쿼리는 불가 함
+  * 이 경우엔 where을 사용할 것
+```mongodb-json-query
+db.users.find({'name':  'username'})
+```
+
+### 쿼리 조건
+* equal 외에도 or, range, negation 등 검색 가능
+![img_9.png](img_9.png)
+
+**범위조건 (lte)**
+```mongodb-json-query
+db.users.find({
+    birth: {
+        $lte: ISODate('1992-02-16')
+    }
+})
+;
+```
+![img_14.png](img_14.png)
+**부정 (ne)**
+```mongodb-json-query
+db.users.find({
+    name: {
+        $ne: 'lee'
+    }
+})
+```
+![img_13.png](img_13.png)
+
+**in, not in**
+```mongodb-json-query
+db.users.find({
+    name: {
+        $in: ['lee', 'lee 22']
+    }
+})
+
+db.users.find({
+    name: {
+        $nin: ['lee', 'lee 22']
+    }
+})
+```
+![img_12.png](img_12.png)  
+![img_11.png](img_11.png)
+
+**or**
+* in 연산자가 가능하다면 or 대신 in을 쓸 것
+* 쿼리 옵티마이저가 더 효율적으로 다룸 
+```mongodb-json-query
+db.users.find({
+    $or: [
+        {
+            name: {
+                $in: ['lee', 'lee 22']
+            }
+        },
+        {
+            name: {
+                $nin: ['lee', 'lee 22']
+            },
+            email: 'taesu@gmail.com'
+        }
+    ]
+})
+```
+* name in(lee, lee 22) or (name not in (lee, lee 22) and email eq 'taesu@gmail.com')
+![img_10.png](img_10.png)
+
+**not, mod**
+* mod 연산자는 첫번째 요소로 나눈후 나머지가 두번째 요소인 경우를 매치 함
+```mongodb-json-query
+// key를 3으로 나눴을때 나머지가 0인 도큐먼트 검색
+db.users.find({
+    key: {$mod: [3, 0]}
+})
+
+// key를 3으로 나눴을때 나머지가 0이 아닌 도큐먼트 검색
+db.users.find({
+    key: {
+        $not: {$mod: [3, 0]}
+    }
+})
+```
+
+### 형 특정 쿼리
+**null**
+![img_15.png](img_15.png)
+
+y가 null인 도큐먼트가 잘 나오는 듯 하나
+```mongodb-json-query
+db.c.find({
+    y: null
+})
+```
+![img_16.png](img_16.png)
+
+키가 존재하지 않는 경우도 나온다
+```mongodb-json-query
+db.c.find({
+    z: null
+})
+```
+![img_17.png](img_17.png)
+
+만약 값이 진짜 null인것을 검색하려면 아래처럼 eq, exists로 검색 해줘야 한다
+```mongodb-json-query
+db.c.find({
+    z: {
+        $eq: null,
+        $exists: true
+    }
+})
+```
+
+**정규표현식**
+* 정규표현식으로 매턴일치 문자열 검색 가능
+* 정규표현식 플래그 i는 사용 가능하지만 필수는 아님
+  * i는 대소문자 구분 할지 안할지 여부
+* PCRE에서 사용가능한 모든 문법 사용 가능
+```mongodb-json-query
+db.users.find({
+    name: {
+        $regex: /lee 2/i
+    }
+})
+```
+
+* 접두사 정규표현식에 인덱스 활용 가능
+```mongodb-json-query
+db.users.find({
+    name: {
+        $regex: /^le/
+    }
+})
+```
+* 대소문자 비구별 검색에는 인덱스 활용 불가
+```mongodb-json-query
+db.users.find({
+    name: {
+        $regex: /^le/i
+    }
+})
+```
+
+**배열에 쿼리하기**
+* 스칼라 쿼리랑 같은 방식
+```mongodb-json-query
+db.foods.find({
+    fruit: 'banana'
+})
+```
+![img_18.png](img_18.png)
+
+**all 연산자**
+* 2개 이상의 배열 요소와 일치하는 배열 찾기
+* 순서는 상관 없음
+```mongodb-json-query
+db.foods.find({
+    fruit: {
+        $all: ['banana', 'apple']
+    }
+})
+```
+![img_19.png](img_19.png)
+
+* 배열 요소와 정확히 일치해야 하는 경우
+* 순서도 일치해야 함
+```mongodb-json-query
+db.foods.find({
+    fruit: ['apple', 'banana', 'peach']
+})
+```
+
+* 인덱스 기반 검색
+```mongodb-json-query
+db.foods.find({
+    'fruit.2': 'banana'
+})
+```
+![img_20.png](img_20.png)
+
+**size 연산자**
+* 특정 크기의 배열을 쿼리
+* gt 등 범위 조회 불가
+```mongodb-json-query
+db.foods.find({
+    fruit: {
+        $size: 3
+    }
+})
+```
+
+* 범위 검색이 필요하다면 별도의 size 컬럼을 두는게 좋을 것
+```mongodb-json-query
+db.foods.updateOne({_id: ObjectId('6346298bc220dc3768954e5a')}, {
+    $push: {
+        fruit: {
+            $each: [
+                'pineapple', 'grape'
+            ]
+        }
+    },
+    $inc: {
+        size: 2
+    }
+})
+```
+* 단 addToSet엔 사용 불가 
+![img_21.png](img_21.png)
+
+**slice 연산자**  
+```mongodb-json-query
+// 먼저 달린 댓글 1개
+db.blog.posts.find({}, {
+    comments: {
+        $slice: 1
+    }
+})
+
+// 나중에 달린 댓글 1개
+db.blog.posts.find({}, {
+    comments: {
+        $slice: -1
+    }
+})
+
+// 처음 1개를 건너 뛰고 2개 반환
+db.blog.posts.find({}, {
+    comments: {
+        $slice: [1, 2]
+    }
+})
+```
+
+* 각 도큐먼트에서 댓글 작성자가 like taesu인 첫번째 코멘트만 조회
+```mongodb-json-query
+db.blog.posts.find(
+    {
+        'comments.name': {
+            $regex: /taesu/
+        }
+    },
+    {
+        title: 1,
+        'comments.$': 1
+    }
+)
+```
+![img_22.png](img_22.png)
+
+### 배열 및 범위쿼리
+```mongodb-json-query
+db.test.insertMany([
+    {x: 5},
+    {x: 15},
+    {x: 25},
+    {x: [5, 25]},
+    {x: [22]},
+]);
+
+db.test.find({
+    x: {
+        $lt: 20,
+        $gt: 5
+    }
+})
+```
+* [5, 25] 배열의 경우 5가 $lt 20에 부합하고 25가 $gt 5에 부합하므로 나옴
+* [22] 배열의 경우 $gt 5엔 부합하나 $lt 20엔 부합하지 않으므로 걸러짐
+![img_23.png](img_23.png)
+
+**elemMatch**
+* 배열요소와 일치시킴
+  * 즉 배열을 대상으로하는 쿼리에 적합
+* 비 배열요소는 일치시키지 않음
+```mongodb-json-query
+db.test.find({
+    x: {
+        $elemMatch: {
+            $lt: 30,
+            $gt: 6
+        }
+    }
+})
+```
+![img_24.png](img_24.png)
+
+**min, max**
+* 인덱스가 있다면 사용 가능
+* 일반적으로 배열을 포함하는 도큐먼트에 범위쿼리를 할 때 min, max가 좋음
+* gt, lt는 범위 내가 아닌 모든 인덱스 항목을 검색한다
+```
+db.test.createIndex({
+    x: 1
+})
+db.test.find({x: {$gt: 5, $lt: 20}})
+    .hint( { x: 1 } )
+    .min({x: 5}).max({x: 20})
+```
+
+### 내장 도큐먼트에 쿼리하기
+```mongodb-json-query
+db.people.insertOne({
+    name: {
+        first: 'taesu',
+        last: 'lee'
+    },
+    age: 30
+});
+
+
+// 결과 없음
+db.people.find({
+    name: {
+        first: 'taesu',
+    }
+})
+        
+// 서브도큐먼트가 정확히 일치해야 함
+db.people.find({
+    name: {
+        first: 'taesu',
+        last: 'lee',
+    }
+})
+
+// 결과 없음 - 순서도 정확히 일치해야 함         
+db.people.find({
+    name: {
+        last: 'lee',
+        first: 'taesu',
+    }
+})
+
+// 가능하다면 내장도큐먼트의 키 기반으로 검색하길
+db.people.find({
+    'name.last': 'lee',
+})
+```
+
+**elemMatch 조합**
+* 정의: 지정된 모든 쿼리 기준과 일치하는 요소가 하나 이상 있는 배열 필드가 포함된 문서를 찾습니다.
+* taesu lee가 작성한 5점 이상 댓글이 있는 받은 블로그 게시물 검색
+```mongodb-json-query
+db.blog.posts.insertOne(
+  {
+            "comments": [
+                {
+                    "name": "taesu lee",
+                    "content": "good posts",
+                    "score": 4
+                },
+                {
+                    "name": "kim",
+                    "content": "nice posts",
+                    "score": 6
+                },
+                {
+                    "name": "park",
+                    "content": "...",
+                    "score": 1
+                }
+            ],
+            "content": "complex contents",
+            "title": "A post"
+        }
+    )
+
+// 결과가 나와버림
+// 주어진 조건이 배열내의 내장 도큐먼트 각각과 일치하므로
+db.blog.posts.find({
+    'comments.name': 'taesu lee',
+    'comments.score': {
+        $gte: 5
+    },
+})
+
+// 결과 없음 - 정상적으로 쿼리 됨
+// elemMatch를 통해 조건을 그룹화 할 수 있음
+db.blog.posts.find({
+    comments: {
+        $elemMatch: {
+            'name': 'taesu lee',
+            'score': {
+                $gte: 5
+            },
+        }
+    }
+})
+
+```
+
+### 커서
+* 커서를 통해 find 결과를 받아올 수 있음
+```mongodb-json-query
+var cursor = db.blog.posts.find()
+while (cursor.hasNext()) {
+    var ele = cursor.next();
+    print(ele.title)
+}
+
+var cursor = db.blog.posts.find()
+cursor.forEach(it => {
+    print(it)
+})
+```
+
+* find 호출 시 셸이 즉시 쿼리하지 않고 결과 요청 쿼리시에 날림
+```mongodb-json-query
+// 아래 구문은 실행시 쿼리는 아직 수행되지 않음
+var cursor = db.blog.posts.find().limit(1).skip(0)
+
+// 여기서 쿼리가 수행 됨
+cursor.haxNext()
+```
+* 비욜 절감을 위해 hasNext 호출시 첫 100개 혹은 4메가 정도를 미리 가져옴
+
+**limit, skip, sort**
+```mongodb-json-query
+db.blog.posts.find()
+  .limit(2)
+  .skip(0)
+  .sort({
+    title: -1
+  })
+```
+![img_25.png](img_25.png)
+* RDB와 마찬가지로 skip이 커질수록 비효율적
+
+![img_26.png](img_26.png)
+```mongodb-json-query
+db.blog.posts.find(
+    {
+        createdAt: {
+            $lt: ISODate('2022-10-12T04:12:49.443Z')
+        }
+    }
+    )
+    .limit(2)
+    .sort({
+        createdAt: -1
+    })
+
+```
+* no offset 방식 쿼리
+![img_27.png](img_27.png)
+
+### 데이터형 비교 순서
+* 최솟값
+* null
+* 숫자
+* 문자열
+* 객체/도큐먼트
+* 배열
+* 이진데이터
+* 객체 ID
+* 불리언
+* 타임스탬프
+* 정규표현식
+* 최댓값
+
+### 랜덤 도큐먼트
+* 가장 간단한 버전
+* count는 언제나 오버헤드가 심하다
+```mongodb-json-query
+db.blog.posts.find()
+    .skip(
+        Math.floor(Math.random() * db.blog.posts.countDocuments())
+    )
+    .limit(1)
+```
+
+* random을 생성시에 밀어 넣어놓고 프로그래밍으로 가져오기
+![img_28.png](img_28.png)
+```mongodb-json-query
+var random = Math.random()
+var randomResult = db.blog.posts.findOne({
+    random: {
+        $gt: random
+    }
+})
+if(randomResult == null) {
+    randomResult = db.blog.posts.findOne({
+    random: {
+        $lte: random
+    }
+})
+}
+print(randomResult)
+```
+
+### 종료되지 않는 커서
+* 서버측에서 커서는 메모리, 리소스를 점유하는 주체
+* 더 가져올 결과가 없거나 클라이언트가 종료 요청 시 리소스 해제 됨
+* 종료 조건
+  * 조건에 일치하는 결과가 더 이상 없는 경우
+  * 클라이언트 측에서 유효 영역을 벗어나서 드라이버가 서버 측으로 종료 요청 보내는 경우
+  * 타임아웃에 의한 종료
+    * 아직 결과를 다 안봤고 유효영역을 벗어나지 않았으나 10분동안 활동이 없으면
+* immortal이라는 함수를 통해 타임아웃에 의한 종료를 방지할 수 있음
+  * 단 반드시 명시적으로 종료 해줘야 함 

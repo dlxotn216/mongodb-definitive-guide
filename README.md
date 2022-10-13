@@ -1596,6 +1596,19 @@ db.users.find({
 .explain('executionStats')  // name_1 인덱스를 선택 함 name_1_birth_1 은 reject으로 감
 ```
 
+### 인덱스 선정
+* 몽고DB는 쿼리 모양을 확인
+* 인덱스 후보 집합 식별
+* 쿼리 후보에 대해 플랜을 만들고 병렬 스레드에서 쿼리 실행
+* 가장 먼저 목표 상태에 도착하는 플랜이 승자가 됨
+* 목표 조건은 아래 중 한개
+  * 모든 결과가 발견 됨
+  * 결과의 전체 배치가 발견
+  * 1만 건의 실행 단계 작업 수행 완료
+* 승리한 플랜은 추후 모양이 같은 쿼리에 사용하도록 캐시 됨
+* 선정된 플랜은 winningPlan 필드에
+* 선정되지 않은 플랜은 rejectedPlans 필드에
+
 ### Index Prefix
 * 기본적으로 정렬조건은 prefix를 만족해야 함
 find().sort({ a: 1, b: 1 })	                { a: 1, b: 1 }  
@@ -1608,3 +1621,796 @@ find({ a: { $gt: 4 }}).sort({ a: 1, b: 1 })	{ a: 1, b: 1 }
 find({ a: 5 }).sort({ b: 1, c: 1 })	        { a: 1 , b: 1, c: 1 }  
 find({ b: 3, a: 4 }).sort({ c: 1 })	        { a: 1, b: 1, c: 1 }
 find({ a: 5, b: { $lt: 3}}).sort({ b: 1 }	{ a: 1, b: 1 }
+
+### 인덱스 설계
+
+**복합 인덱스 설계**  
+* 동등 필터에 대한 키를 맨 앞에
+* 정렬에 사용되는 키는 다중값 필드 앞에 표시
+* 다중값 필터에 대한 키는 마지막에 표시
+
+**키 방향 선택**
+* 단일 인덱스라면 방향은 무관하다
+* 둘 이상의 키에 대해 정렬이 들어간다면 방향이 중요함
+* 역방향 인덱스는 서로 동등함
+* 각각 -1을 곱한 방향과 동등
+
+{age: 1, name: 1}로 잡힌경우 {age: -1, name: -1}과 동등하다    
+[21, user0001] -> 8812313183  
+[21, user1001] -> 8812313181  
+[21, user1020] -> 8812313185  
+[22, user2020] -> 8812313182  
+[22, user5020] -> 8812315185  
+[23, user1020] -> 8812311185  
+[23, user1040] -> 8812317185  
+
+{a:  1, b: -1, c:  1}  
+{a: -1, b:  1, c: -1}  
+[1, 2, 1]    
+[1, 2, 2]  
+[1, 1, 1]  
+[1, 1, 2]
+[2, 2, 1]   
+[2, 2, 2]    
+[2, 1, 1]  
+[2, 1, 2]  
+[3, 3, 1]  
+[3, 3, 2]  
+[3, 2, 1]  
+[3, 2, 2]  
+[3, 1, 1]  
+[3, 1, 2]  
+
+**커버드 쿼리**  
+* 인덱스가 쿼리가 요구하는 값을 모두 포함하는 경우
+* _id 필드를 반환받지 않도록 키를 지정해야 함
+
+```mongodb-json-query
+db.users.find({
+     birth: {
+        $lt: ISODate('1993-02-20'),
+        $gt: ISODate('1993-02-16'),
+    }
+},
+    {
+         name:1,
+         birth:1,
+        _id: 0
+    }
+).sort({name: -1})
+    .explain('executionStats');
+```
+* totalDocsExamined가 0으로 잡힘
+  * document에 접근하지 않고 인덱스 선에서 해결 했으므로
+* inputStage에 FETCH 단계가 없이 PROJECTION_COVERED과 IXSCAN 단계만 있음
+* 
+```json
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 0,
+      "executionTimeMillis": 3,
+      "totalKeysExamined": 0,
+      "totalDocsExamined": 0,
+      "executionStages": {
+        "stage": "SORT",
+        "nReturned": 0,
+        "executionTimeMillisEstimate": 0,
+        "works": 3,
+        "advanced": 0,
+        "needTime": 1,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "sortPattern": {
+          "name": -1
+        },
+        "memLimit": 104857600,
+        "type": "default",
+        "totalDataSizeSorted": 0,
+        "usedDisk": false,
+        "spills": 0,
+        "inputStage": {
+          "stage": "PROJECTION_COVERED",
+          "nReturned": 0,
+          "executionTimeMillisEstimate": 0,
+          "works": 1,
+          "advanced": 0,
+          "needTime": 0,
+          "needYield": 0,
+          "saveState": 0,
+          "restoreState": 0,
+          "isEOF": 1,
+          "transformBy": {
+            "name": 1,
+            "birth": 1,
+            "_id": 0
+          },
+          "inputStage": {
+            "stage": "IXSCAN",
+            "nReturned": 0,
+            "executionTimeMillisEstimate": 0,
+            "works": 1,
+            "advanced": 0,
+            "needTime": 0,
+            "needYield": 0,
+            "saveState": 0,
+            "restoreState": 0,
+            "isEOF": 1,
+            "keyPattern": {
+              "birth": 1,
+              "name": 1
+            },
+            "indexName": "birth_1_name_1",
+            "isMultiKey": false,
+            "multiKeyPaths": {
+              "birth": [],
+              "name": []
+            },
+            "isUnique": false,
+            "isSparse": false,
+            "isPartial": false,
+            "indexVersion": 2,
+            "direction": "forward",
+            "indexBounds": {
+              "birth": ["(new Date(729820800000), new Date(730166400000))"],
+              "name": ["[MinKey, MaxKey]"]
+            },
+            "keysExamined": 0,
+            "seeks": 1,
+            "dupsTested": 0,
+            "dupsDropped": 0
+          }
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+        "$and": [
+          {
+            "birth": {
+              "$lt": {"$date": "1993-02-20T00:00:00.000Z"}
+            }
+          },
+          {
+            "birth": {
+              "$gt": {"$date": "1993-02-16T00:00:00.000Z"}
+            }
+          }
+        ]
+      },
+      "queryHash": "53E37C76",
+      "planCacheKey": "6A6F1DD8",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "SORT",
+        "sortPattern": {
+          "name": -1
+        },
+        "memLimit": 104857600,
+        "type": "default",
+        "inputStage": {
+          "stage": "PROJECTION_COVERED",
+          "transformBy": {
+            "name": 1,
+            "birth": 1,
+            "_id": 0
+          },
+          "inputStage": {
+            "stage": "IXSCAN",
+            "keyPattern": {
+              "birth": 1,
+              "name": 1
+            },
+            "indexName": "birth_1_name_1",
+            "isMultiKey": false,
+            "multiKeyPaths": {
+              "birth": [],
+              "name": []
+            },
+            "isUnique": false,
+            "isSparse": false,
+            "isPartial": false,
+            "indexVersion": 2,
+            "direction": "forward",
+            "indexBounds": {
+              "birth": ["(new Date(729820800000), new Date(730166400000))"],
+              "name": ["[MinKey, MaxKey]"]
+            }
+          }
+        }
+      }
+    }
+  }
+]
+```
+
+**암시적 인덱스**
+* 복합 인덱스는 prefix 규칙을 따름 
+* {a: 1, b: 1, c: 1} 인덱스는 아래의 인덱스로 활용 가능
+  * {a: 1}
+  * {a: 1, b: 1}
+  * {a: 1, b: 1, c: 1}
+
+### $ 연산자의 인덱스 사용 법
+**비효율적인 연산자**
+* 일반적으로 부정 조건 ($ne)은 비효율임
+  * 인덱스를 사용하긴 하나 잘 활용되지 않음
+  * $ne: {name: 'user-1'}인 경우 user-1이 아닌것을 모두 찾아야 하기에 인덱스 전체를 뒤져야 함
+  * $ne: {age: 3}인 경우 3보다 작거나 3보다 큰 것을 모두 뒤져야 함
+* $not은 종종 인덱스를 사용하나 대부분 테이블 스캔을 수행
+* $nin은 항상 테이블 스캔
+* 이런 종류를 사용해야 한다면 결과셋이 적은 도큐먼트를 필터링한 후 추가하는 것을 고려
+
+**범위**
+* 동등 절을 첫번째에
+* 범위절을 마지막에
+
+**OR 쿼리**
+* 현재 몽고DB는 쿼리당 하나의 인덱스만 사용 가능
+* {a: 1}, {b: 1}로 생성하고 {x: 'taesu', b: 'manager'}로 쿼리하면 두 개 중 하나가 선택 됨
+* or의 경우 두개의 쿼리를 수행하고 하나로 합치므로 인덱스 두개가 선택
+```mongodb-json-query
+db.users.find({
+    $or: [
+        {name: 'user-99123'},
+        {_id: ObjectId('634622a8c220dc3768954e54')},
+    ]
+}).explain('executionStats');
+```
+* SUBPLAN에 두개의 IXSCAN이 존재
+  * name
+  * _id
+```js
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 2,
+      "executionTimeMillis": 0,
+      "totalKeysExamined": 2,
+      "totalDocsExamined": 2,
+      "executionStages": {
+        "stage": "SUBPLAN",
+        "nReturned": 2,
+        "executionTimeMillisEstimate": 0,
+        "works": 4,
+        "advanced": 2,
+        "needTime": 1,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "inputStage": {
+          "stage": "FETCH",
+          "nReturned": 2,
+          "executionTimeMillisEstimate": 0,
+          "works": 4,
+          "advanced": 2,
+          "needTime": 1,
+          "needYield": 0,
+          "saveState": 0,
+          "restoreState": 0,
+          "isEOF": 1,
+          "docsExamined": 2,
+          "alreadyHasObj": 0,
+          "inputStage": {
+            "stage": "OR",
+            "nReturned": 2,
+            "executionTimeMillisEstimate": 0,
+            "works": 4,
+            "advanced": 2,
+            "needTime": 1,
+            "needYield": 0,
+            "saveState": 0,
+            "restoreState": 0,
+            "isEOF": 1,
+            "dupsTested": 2,
+            "dupsDropped": 0,
+            "inputStages": [
+              {
+                "stage": "IXSCAN",
+                "nReturned": 1,
+                "executionTimeMillisEstimate": 0,
+                "works": 2,
+                "advanced": 1,
+                "needTime": 0,
+                "needYield": 0,
+                "saveState": 0,
+                "restoreState": 0,
+                "isEOF": 1,
+                "keyPattern": {
+                  "_id": 1
+                },
+                "indexName": "_id_",
+                "isMultiKey": false,
+                "multiKeyPaths": {
+                  "_id": []
+                },
+                "isUnique": true,
+                "isSparse": false,
+                "isPartial": false,
+                "indexVersion": 2,
+                "direction": "forward",
+                "indexBounds": {
+                  "_id": ["[ObjectId('634622a8c220dc3768954e54'), ObjectId('634622a8c220dc3768954e54')]"]
+                },
+                "keysExamined": 1,
+                "seeks": 1,
+                "dupsTested": 0,
+                "dupsDropped": 0
+              },
+              {
+                "stage": "IXSCAN",
+                "nReturned": 1,
+                "executionTimeMillisEstimate": 0,
+                "works": 2,
+                "advanced": 1,
+                "needTime": 0,
+                "needYield": 0,
+                "saveState": 0,
+                "restoreState": 0,
+                "isEOF": 1,
+                "keyPattern": {
+                  "name": 1
+                },
+                "indexName": "name_1",
+                "isMultiKey": false,
+                "multiKeyPaths": {
+                  "name": []
+                },
+                "isUnique": false,
+                "isSparse": false,
+                "isPartial": false,
+                "indexVersion": 2,
+                "direction": "forward",
+                "indexBounds": {
+                  "name": ["[\"user-99123\", \"user-99123\"]"]
+                },
+                "keysExamined": 1,
+                "seeks": 1,
+                "dupsTested": 0,
+                "dupsDropped": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+        "$or": [
+          {
+            "_id": {
+              "$eq": {"$oid": "634622a8c220dc3768954e54"}
+            }
+          },
+          {
+            "name": {
+              "$eq": "user-99123"
+            }
+          }
+        ]
+      },
+      "queryHash": "830FCEF5",
+      "planCacheKey": "F684D860",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "SUBPLAN",
+        "inputStage": {
+          "stage": "FETCH",
+          "inputStage": {
+            "stage": "OR",
+            "inputStages": [
+              {
+                "stage": "IXSCAN",
+                "keyPattern": {
+                  "_id": 1
+                },
+                "indexName": "_id_",
+                "isMultiKey": false,
+                "multiKeyPaths": {
+                  "_id": []
+                },
+                "isUnique": true,
+                "isSparse": false,
+                "isPartial": false,
+                "indexVersion": 2,
+                "direction": "forward",
+                "indexBounds": {
+                  "_id": ["[ObjectId('634622a8c220dc3768954e54'), ObjectId('634622a8c220dc3768954e54')]"]
+                }
+              },
+              {
+                "stage": "IXSCAN",
+                "keyPattern": {
+                  "name": 1
+                },
+                "indexName": "name_1",
+                "isMultiKey": false,
+                "multiKeyPaths": {
+                  "name": []
+                },
+                "isUnique": false,
+                "isSparse": false,
+                "isPartial": false,
+                "indexVersion": 2,
+                "direction": "forward",
+                "indexBounds": {
+                  "name": ["[\"user-99123\", \"user-99123\"]"]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "rejectedPlans": []
+    }
+  }
+]
+```
+* 가능하다면 or보다는 in을 사용할 것
+```mongodb-json-query
+db.users.find({
+    $or: [
+        {name: 'user-99123'},
+        {name: 'user-99223'},
+    ]
+}).explain('executionStats')
+```
+* or이지만 쿼리플래너가 in으로 바꿈
+```json
+[
+  {
+    "command": {
+      "find": "users",
+      "filter": {
+        "$or": [
+          {
+            "name": "user-99123"
+          },
+          {
+            "name": "user-99223"
+          }
+        ]
+      },
+      "$db": "users"
+    },
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 2,
+      "executionTimeMillis": 1,
+      "totalKeysExamined": 4,
+      "totalDocsExamined": 2,
+      "executionStages": {
+        "stage": "FETCH",
+        "nReturned": 2,
+        "executionTimeMillisEstimate": 0,
+        "works": 5,
+        "advanced": 2,
+        "needTime": 1,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "docsExamined": 2,
+        "alreadyHasObj": 0,
+        "inputStage": {
+          "stage": "IXSCAN",
+          "nReturned": 2,
+          "executionTimeMillisEstimate": 0,
+          "works": 4,
+          "advanced": 2,
+          "needTime": 1,
+          "needYield": 0,
+          "saveState": 0,
+          "restoreState": 0,
+          "isEOF": 1,
+          "keyPattern": {
+            "name": 1
+          },
+          "indexName": "name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "name": ["[\"user-99123\", \"user-99123\"]", "[\"user-99223\", \"user-99223\"]"]
+          },
+          "keysExamined": 4,
+          "seeks": 2,
+          "dupsTested": 0,
+          "dupsDropped": 0
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+        "name": {
+          "$in": ["user-99123", "user-99223"]
+        }
+      },
+      "queryHash": "A8024AF6",
+      "planCacheKey": "3ABE760D",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "FETCH",
+        "inputStage": {
+          "stage": "IXSCAN",
+          "keyPattern": {
+            "name": 1
+          },
+          "indexName": "name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "name": ["[\"user-99123\", \"user-99123\"]", "[\"user-99223\", \"user-99223\"]"]
+          }
+        }
+      }
+    }
+  }
+]
+```
+
+### 객체, 배열 인덱싱
+**객체 인덱싱**
+```json
+{
+  "name": "taesu",
+  "loc": {
+    "ip": "192.168.1.1",
+    "city": "seoul",
+    "state": "ny"
+  }
+}
+```
+* 내장 도큐먼트의 서브 필드에 인덱스를 생성할 수 있음
+```mongodb-json-query
+db.users.createIndex({'ioc.city':  1})
+```
+* 내장 도큐먼트 자체에 인덱스를 걸면 서브 도큐먼트 전체에 쿼리할 때만 유용하다
+```mongodb-json-query
+db.users.createIndex({'ioc':  1})
+
+// 아래처럼 정확히 올바른 필드 순서로 기술된 쿼리만 인덱스 활용 가능
+db.users.find({
+  loc: {
+    ip: '1.2.3.4',
+    city: 'seoul',
+    state: 'ny'
+  }
+})
+```
+
+**배열 인덱싱**
+* 배열에 인덱스를 생성하면 쓰기작업시 모든 배열요소가 갱신 되어야 함
+  * db.blog.createIndex({'comments.date'})
+* 배열의 특정 항목에만 인덱스 생성할 수 있다
+  * db.blog.createIndex({'comments.10.votes': 1})
+  * 11번째 댓글에 인덱스를 거는 것이라 크게 의미는 없는 듯
+* 인덱스 항목의 한 필드만 배열로 가져갈 수 있다
+```mongodb-json-query
+db.multi.createIndex({x: 1, y: 1})
+db.multi.insertOne({
+    x: 1,
+    y: [1,2,3]
+})
+db.multi.insertOne({
+    x: [1],
+    y: 1
+})
+// error
+// 총 6개의 인덱스를 만들어야 하므로
+db.multi.insertOne({
+    x: [1, 2],
+    y: [1,2,3]
+})
+```
+
+* 배열 필드를 인덱스 키로 가지면 다중키 인덱스로 표시 됨
+* isMultiKey: true면 다중키 인덱스가 사용 된 것임
+* 다중키 인덱스는 비다중키 인덱스보다 다소 느릴 수 있음
+  * 결과 반환 전 중복을 제거해야 하므로
+```mongodb-json-query
+db.multi.find({x: 1}).explain('executionStats')
+```
+```json
+{
+  "inputStage": {
+    "stage": "IXSCAN",
+    "nReturned": 2,
+    "executionTimeMillisEstimate": 0,
+    "works": 5,
+    "advanced": 2,
+    "needTime": 2,
+    "needYield": 0,
+    "saveState": 0,
+    "restoreState": 0,
+    "isEOF": 1,
+    "keyPattern": {
+      "x": 1,
+      "y": 1
+    },
+    "indexName": "x_1_y_1",
+    "isMultiKey": true,
+    "multiKeyPaths": {
+      "x": ["x"],
+      "y": ["y"]
+    },
+    "isUnique": false,
+    "isSparse": false,
+    "isPartial": false,
+    "indexVersion": 2,
+    "direction": "forward",
+    "indexBounds": {
+      "x": ["[1, 1]"],
+      "y": ["[MinKey, MaxKey]"]
+    },
+    "keysExamined": 4,
+    "seeks": 1,
+    "dupsTested": 4,
+    "dupsDropped": 2
+  }
+}
+```
+
+**카디널리티**
+* RDB와 동일하게 카디널리티가 높은 필드를 인덱스로
+* 복합인덱스에서도 마찬가지 높은 카디널리티 -> 낮은 카디널리티 순으로 기술
+
+**explain 출력**
+* COLLSCAN = 컬렉션 풀 스캔
+* IXSCAN = 인덱스 스캔 가능 했는지 여부
+* nRetruned = 반환된 도큐먼트 개수
+* totalKeysExamined = 검색한 인덱스 개수
+  * 인덱스가 사용 된 경우 살펴본 인덱스 항목 개수
+  * 테이블을 스캔 했다면 조사한 도큐먼트 개수
+* totalDocsExamined = 검색한 도큐먼트 개수 (디스크 접근)
+  * 디스크내 실제 도큐먼트를 가리키는 인덱스 포인터를 따라간 횟수
+* totalKeysExamined == totalDocsExamined
+  * 인덱스를 사용해 모든 도큐먼트를 찾았음
+* nscannedObjects = 스캔한 도큐먼트 개수
+* executionTimeMillis = 서버가 요청을 받고 응답을 보낸 시점까지 경과 시간
+  * 여러 플랜을 시도 했다면 모든 플랜이 실행 되기까지 걸린 시간
+* isMultiKey = 다중키 인덱스 사용 여부
+* needYields = 쓰기 요청을 처리하도록 쿼리가 양보(yield)한 횟수
+  * 대기 중인 스기가 있다면 쿼리는 일시적으로 락을 해제하고 쓰기부터 처리 함
+* indexBounds = 인덱스가 어떻게 사용되었는지 설명
+  * 탐색한 인덱스의 범위를 제공
+
+**인덱스를 생성하지 않는 경우**
+* 풀스캔이 더 효율적인 경우
+* 통상적으로 쿼리가 컬렉션의 30% 미만을 반환하는 경우
+  * 절대적이지 않음
+  * 2% ~ 60%로 광범위 함
+
+### 인덱스 종류
+**고유 인덱스**
+* Unique를 보장
+```mongodb-json-query
+db.users.createIndex({email: 1}, {unique: true})
+```
+* 4.2 버전 이후 인덱스 버킷의 크기제한은 8킬로바이트
+  * 8킬로바이트보다 긴 키는 고유 인덱스 제약 조건이 적용되지 않음
+
+**복합 고유 인덱스**
+* GridFS는 복합 고유 인덱스를 사용 함
+
+**중복 제거하기**
+* 기존 컬렉션에 고유 인덱스 추가 시 중복이 있으면 실패 함
+* 집계 프레임워크를 통해 어떤 중복이 있는지 찾으면 유용 함
+
+**부분 인덱스**
+* 고유 인덱스는 null도 값으로 취급 함
+* 오직 키가 존재할 때만 고유 인덱스를 적용하도록 하려면 unique + partial을 결합
+  * RDB의 희소 인덱스(sparse index)와 비슷 
+```mongodb-json-query
+db.users.createIndex({email: 1}, {
+    unique: true,
+    partialFilterExpression: {
+        email: {    // email 필드가 있는 도큐먼트에 대해서만
+            $exists: true
+        }
+    }
+})
+```
+```mongodb-json-query
+db.foo.find()
+{_id:  0}
+{_id:  1, x:  1}
+{_id:  2, x:  2}
+{_id:  3, x:  3}
+
+db.foo.createIndex({x:  1})
+db.foo.find({
+  x: {
+    $ne: 2
+  }  
+})
+{_id:  0}
+{_id:  1, x:  1}
+{_id:  3, x:  3}
+
+db.foo.createIndex({x:  1}, {
+   partialFilterExpression: {
+    x: {$exists: true}
+  }
+})
+db.foo.find({
+  x: {
+    $ne: 2
+  }  
+})
+{_id:  1, x:  1}
+{_id:  3, x:  3}
+```
+
+**인덱스 관리**
+* db.users.getIndexes()
+```json
+[
+  {
+    "key": {
+      "email": 1
+    },
+    "name": "email_1",
+    "v": 2,   // 내부적으로 갖는 인덱스 버저닝, 오래 된 버전의 인덱스는 삭제 및 재구축이 필요 함
+    "partialFilterExpression": {
+      "email": {
+        "$exists": true
+      }
+    },
+    "unique": true
+  }
+]
+```
+* db.users.createIndexes()
+* db.users.dropIndex()
+* db.users.dropIndexes()
+
+**인덱스 식별**
+* 컬렉션 내 각 인덱스는 고유 식별자를 가짐
+* 인덱스 명은 서버에서 인덱스를 삭제, 조작 하는데 사용
+* 기본이름은 키명1_방향1_키명2_방향2...
+* 이름 지정 가능
+  * db.foo.createIndex({x:  1}, {name: 'myIndex'})
+
+**인덱스 변경**
+* dropIndex로 인덱스 삭제
+  * db.users.dropIndex('name_1')
+* 인덱스 생성, 수정 시 오랜 시간과 리소스가 많이 필요 함
+  * 4.2 버전 이후부턴 인덱스 빠른 구축을 위해 모든 읽기 쓰기를 중단 함
+  * 이것을 막기 위해 background 옵션을 사용 하는 것이 좋음
+  * 하지만 여전히 애플리케이션에 큰 영향을 줌
+  * 백그라운드 인덱싱은 포그라운드 인덱싱보다 훨씬 느림
+  * 4.2 버전 이후부터 하이브리드 인덱스 구축이라는 것을 제공
+    * 인덱스 구축 프로세스의 시작과 끝에 락을 걸며 나머지 부분엔 읽기 쓰기 작업을 인터리빙 함
+    * 포그라운드/백그라운드 인덱싱을 대체 할 수 있음
+* 기존 도큐먼트에 인덱스를 생성하는게 인덱스 생성 후 도큐먼트를 마이그레이션 하는 것보다 빠름

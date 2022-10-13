@@ -1142,3 +1142,469 @@ print(randomResult)
     * 아직 결과를 다 안봤고 유효영역을 벗어나지 않았으나 10분동안 활동이 없으면
 * immortal이라는 함수를 통해 타임아웃에 의한 종료를 방지할 수 있음
   * 단 반드시 명시적으로 종료 해줘야 함 
+
+## 인덱스
+* 테스트 데이터 준비
+```mongodb-json-query
+var users = []
+for (i = 0; i < 1000000; i++) {
+    users[i] = {
+        name: 'user-' + i,
+        key: i + 3,
+        email: 'user-' + i + '@test.com',
+        birth: ISODate()
+    }
+}
+db.users.insertMany(users)
+
+// 또는
+for (i = 0; i < 1000000; i++) {
+    var user = {
+        name: 'user-' + i,
+        key: i + 3,
+        email: 'user-' + i + '@test.com',
+        birth: ISODate()
+    }
+    db.users.insertOne(user)
+}
+```
+
+* explain 명령을 통해 실행계획 확인
+* totalDocsExamined 수치가 쿼리 수행시 살펴본 도큐먼트 개수
+```mongodb-json-query
+db.users.find({name: 'user-99912'}).explain('executionStats')
+```
+```json
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 1,
+      "executionTimeMillis": 235,
+      "totalKeysExamined": 0,
+      "totalDocsExamined": 1000003,
+      "executionStages": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "name": {
+            "$eq": "user-99912"
+          }
+        },
+        "nReturned": 1,
+        "executionTimeMillisEstimate": 5,
+        "works": 1000005,
+        "advanced": 1,
+        "needTime": 1000003,
+        "needYield": 0,
+        "saveState": 1000,
+        "restoreState": 1000,
+        "isEOF": 1,
+        "direction": "forward",
+        "docsExamined": 1000003
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+        "name": {
+          "$eq": "user-99912"
+        }
+      },
+      "queryHash": "64908032",
+      "planCacheKey": "64908032",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "name": {
+            "$eq": "user-99912"
+          }
+        },
+        "direction": "forward"
+      }
+    }
+  }
+]
+```
+
+### 인덱스 생성
+**단일인덱스**
+* 사용자 이름에 인덱스 생성
+* db.currentOp()를 통해 구축 진행률 확인 가능
+* RDB와 마찬가지로 인덱스가 많을수록 쓰기 연산에 오버헤드가 있음
+```mongodb-json-query
+db.users.createIndex({'name': 1})
+```
+```json
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 1,
+      "executionTimeMillis": 8,
+      "totalKeysExamined": 1,
+      "totalDocsExamined": 1, // 살펴본 도큐먼트 1개
+      "executionStages": {
+        "stage": "FETCH",
+        "nReturned": 1,
+        "executionTimeMillisEstimate": 0,
+        "works": 2,
+        "advanced": 1,
+        "needTime": 0,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "docsExamined": 1,
+        "alreadyHasObj": 0,
+        "inputStage": {
+          "stage": "IXSCAN",
+          "nReturned": 1,
+          "executionTimeMillisEstimate": 0,
+          "works": 2,
+          "advanced": 1,
+          "needTime": 0,
+          "needYield": 0,
+          "saveState": 0,
+          "restoreState": 0,
+          "isEOF": 1,
+          "keyPattern": {
+            "name": 1
+          },
+          "indexName": "name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "name": ["[\"user-99912\", \"user-99912\"]"]
+          },
+          "keysExamined": 1,
+          "seeks": 1,
+          "dupsTested": 0,
+          "dupsDropped": 0
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+        "name": {
+          "$eq": "user-99912"
+        }
+      },
+      "queryHash": "64908032",
+      "planCacheKey": "A6C0273F",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "FETCH",
+        "inputStage": {
+          "stage": "IXSCAN",
+          "keyPattern": {
+            "name": 1
+          },
+          "indexName": "name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "name": ["[\"user-99912\", \"user-99912\"]"]
+          }
+        }
+      }
+    }
+  }
+]
+```
+
+**복합인덱스**
+* name 인덱스는 아래 쿼리에 도움이 안됨
+```mongodb-json-query
+db.users.find().sort({birth: 1, name: 1})
+```
+* 따라서 아래와 같은 복합 인덱스 생성
+```mongodb-json-query
+db.users.createIndex({birth: 1, 'name': 1})
+```
+아래처럼 인덱스가 구성 됨  
+['1993-02-16', 'user-12311'] -> 8623513776  
+['1993-02-16', 'user-12111'] -> 8623513778  
+* 생년월일, 이름 항목이 레코드 식별자를 가리킴
+* 레코드 식별자란 내부적으로 스토리지 엔진에 의해 사용되며 도큐먼트 데이터를 찾음
+* 생년월일로 오름차순 정렬되고 동일한 생년월일에서 사용자 이름으로 오름차순 정렬
+
+* 인덱스 생성 전
+* 쿼리 수행시간도 3초 이상
+```json
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 1000003,
+      "executionTimeMillis": 4188,
+      "totalKeysExamined": 0,
+      "totalDocsExamined": 1000003,
+      "executionStages": {
+        "stage": "SORT",
+        "nReturned": 1000003,
+        "executionTimeMillisEstimate": 3211,
+        "works": 2000009,
+        "advanced": 1000003,
+        "needTime": 1000005,
+        "needYield": 0,
+        "saveState": 2001,
+        "restoreState": 2001,
+        "isEOF": 1,
+        "sortPattern": {
+          "birth": 1,
+          "name": 1
+        },
+        "memLimit": 104857600,
+        "type": "simple",
+        "totalDataSizeSorted": 203778363,
+        "usedDisk": true,
+        "spills": 2,
+        "inputStage": {
+          "stage": "COLLSCAN",
+          "nReturned": 1000003,
+          "executionTimeMillisEstimate": 2,
+          "works": 1000005,
+          "advanced": 1000003,
+          "needTime": 1,
+          "needYield": 0,
+          "saveState": 2001,
+          "restoreState": 2001,
+          "isEOF": 1,
+          "direction": "forward",
+          "docsExamined": 1000003
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+      },
+      "queryHash": "42015AE3",
+      "planCacheKey": "42015AE3",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "SORT",
+        "sortPattern": {
+          "birth": 1,
+          "name": 1
+        },
+        "memLimit": 104857600,
+        "type": "simple",
+        "inputStage": {
+          "stage": "COLLSCAN",
+          "direction": "forward"
+        }
+      }
+    }
+  }
+]
+```
+
+* 인덱스 생성 후
+* 쿼리 수행시간도 300ms 이하
+```json
+[
+  {
+    "executionStats": {
+      "executionSuccess": true,
+      "nReturned": 1000003,
+      "executionTimeMillis": 494, // 4188 -> 494
+      "totalKeysExamined": 1000003, // 0 -> 1000003 
+      "totalDocsExamined": 1000003,
+      "executionStages": {
+        "stage": "FETCH",
+        "nReturned": 1000003,
+        "executionTimeMillisEstimate": 14,
+        "works": 1000004,
+        "advanced": 1000003,
+        "needTime": 0,
+        "needYield": 0,
+        "saveState": 1000,
+        "restoreState": 1000,
+        "isEOF": 1,
+        "docsExamined": 1000003,
+        "alreadyHasObj": 0,
+        "inputStage": {
+          "stage": "IXSCAN",
+          "nReturned": 1000003,
+          "executionTimeMillisEstimate": 11,
+          "works": 1000004,
+          "advanced": 1000003,
+          "needTime": 0,
+          "needYield": 0,
+          "saveState": 1000,
+          "restoreState": 1000,
+          "isEOF": 1,
+          "keyPattern": {
+            "birth": 1,
+            "name": 1
+          },
+          "indexName": "birth_1_name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "birth": [],
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "birth": ["[MinKey, MaxKey]"],
+            "name": ["[MinKey, MaxKey]"]
+          },
+          "keysExamined": 1000003,
+          "seeks": 1,
+          "dupsTested": 0,
+          "dupsDropped": 0
+        }
+      }
+    },
+    "queryPlanner": {
+      "namespace": "users.users",
+      "indexFilterSet": false,
+      "parsedQuery": {
+      },
+      "queryHash": "42015AE3",
+      "planCacheKey": "42015AE3",
+      "maxIndexedOrSolutionsReached": false,
+      "maxIndexedAndSolutionsReached": false,
+      "maxScansToExplodeReached": false,
+      "winningPlan": {
+        "stage": "FETCH",
+        "inputStage": {
+          "stage": "IXSCAN",
+          "keyPattern": {
+            "birth": 1,
+            "name": 1
+          },
+          "indexName": "birth_1_name_1",
+          "isMultiKey": false,
+          "multiKeyPaths": {
+            "birth": [],
+            "name": []
+          },
+          "isUnique": false,
+          "isSparse": false,
+          "isPartial": false,
+          "indexVersion": 2,
+          "direction": "forward",
+          "indexBounds": {
+            "birth": ["[MinKey, MaxKey]"],
+            "name": ["[MinKey, MaxKey]"]
+          }
+        }
+      }
+    }
+  }
+]
+```
+
+가장 많이 사용하는 세가지 유형의 인덱스 사용법
+```mongodb-json-query
+db.users.find({birth: ISODate('1993-02-16')}).sort({name: -1})
+```
+* 단일 값을 찾는 동등쿼리
+* 인덱스의 두번째 필드로 결과가 이미 적절한 순서로 정렬 됨
+['1993-02-16', 'user-12311'] -> 8623513776  
+['1993-02-16', 'user-12111'] -> 8623513778 
+1993-02-16과 일치하는 마지막 항목부터 역 탐색, 단일 인덱스의 정렬 방향은 문제되지 않음    
+
+
+```mongodb-json-query
+db.users.find({
+    birth: {
+        $lt: ISODate('1993-02-20'),
+        $gt: ISODate('1993-02-16'),
+    }
+})
+```
+* 범위 쿼리
+* 첫번째 키인 birth를 사용해서 아래 도큐먼트를 가져 옴
+['1993-02-17', 'user-12311'] -> 8623513776  
+['1993-02-17', 'user-12111'] -> 8623513778  
+...  
+['1993-02-18', 'user-02311'] -> 8623513770  
+['1993-02-18', 'user-52111'] -> 8623513772  
+...    
+['1993-02-19', 'user-12351'] -> 8623513771  
+['1993-02-19', 'user-62111'] -> 8623513773  
+
+```mongodb-json-query
+db.users.find({
+    birth: {
+        $lt: ISODate('1993-02-20'),
+        $gt: ISODate('1993-02-16'),
+    }
+}).sort({name: -1})
+```
+* 범위 쿼리 + 정렬
+* 첫번째 키인 birth를 사용해서 아래 도큐먼트를 가져 옴
+* 그리고 name으로 정렬 함
+  * 정렬은 메모리에서 발생 함
+  * 결과가 많으면 느려짐
+  * 결과가 32mb 이상이면 정렬 거부 함
+
+['1993-02-17', 'user-12311'] -> 8623513776  
+['1993-02-17', 'user-12111'] -> 8623513778  
+...  
+['1993-02-18', 'user-02311'] -> 8623513770  
+['1993-02-18', 'user-52111'] -> 8623513772  
+...    
+['1993-02-19', 'user-12351'] -> 8623513771  
+['1993-02-19', 'user-62111'] -> 8623513773  
+
+-> 62111, 52111, 12351 ... 순서로 정렬을 메모리에서 수행  
+
+* 동등 검색이 아닌경우에서 복합인덱스 구성 시 정렬 키를 첫번째에 두는것이 좋음
+  * 대규모의 인메모리 정렬이 필요하지 않기 때문
+* 단, 정렬은 이미 되어있고 조건에 맞는 것을 찾기 위해 인덱스 전체를 훑게 됨 
+```mongodb-json-query
+db.users.createIndex({name: 1, birth: 1});
+db.users.find({
+    birth: {
+        $lt: ISODate('1993-02-20'),
+        $gt: ISODate('1993-02-16'),
+    }
+}).sort({name: -1})
+.explain('executionStats')  // name_1 인덱스를 선택 함 name_1_birth_1 은 reject으로 감
+```
+
+### Index Prefix
+* 기본적으로 정렬조건은 prefix를 만족해야 함
+find().sort({ a: 1, b: 1 })	                { a: 1, b: 1 }  
+find().sort({ a: -1, b: -1 })	            { a: 1, b: 1 }  
+find().sort({ a: 1, b: 1, c: 1 })	        { a: 1, b: 1, c: 1 }  
+find({ a: { $gt: 4 }}).sort({ a: 1, b: 1 })	{ a: 1, b: 1 }   
+
+* 정렬조건이 prefix가 아닌경우 검색조건이 동등검색 이어야 인덱스를 잘 탐
+예제 쿼리	인덱스 Prefix
+find({ a: 5 }).sort({ b: 1, c: 1 })	        { a: 1 , b: 1, c: 1 }  
+find({ b: 3, a: 4 }).sort({ c: 1 })	        { a: 1, b: 1, c: 1 }
+find({ a: 5, b: { $lt: 3}}).sort({ b: 1 }	{ a: 1, b: 1 }

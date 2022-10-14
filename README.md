@@ -2414,3 +2414,236 @@ db.foo.find({
     * 인덱스 구축 프로세스의 시작과 끝에 락을 걸며 나머지 부분엔 읽기 쓰기 작업을 인터리빙 함
     * 포그라운드/백그라운드 인덱싱을 대체 할 수 있음
 * 기존 도큐먼트에 인덱스를 생성하는게 인덱스 생성 후 도큐먼트를 마이그레이션 하는 것보다 빠름
+
+
+### 특수 인덱스
+**text 인덱스**
+* 전문검색 인덱스
+* 아틀라스전문 검색 인덱스가 아님
+  * 아틀라스는 아파치 루씬을 활용함
+* 문법과 같은 언어적 특성을 반영 함
+  * entry == entries
+* 텍스트 인덱스에서 필요한 키의 개수는 인덱싱 되는 필드의 단어 개수에 비례 함
+  * 즉 많은 리소스가 필요할 수 있으므로 인덱스 생성 작업은 애플리케이션에 영향이 없을 때 해야 함
+* 문자열 토큰화, 형태소화, 잠재적 갱신이 필요하므로 여타 다른 인덱스보다 비용이 큼
+  * 쓰기 연산에서 오버헤드 심함
+  * 샤딩시 데이터 이동 속도 저하
+```mongodb-json-query
+db.blog.posts.createIndex({
+    title: 'text',
+    content: 'text'
+}, {
+    weights: {
+        title: 3,
+        content: 2
+    }
+})
+
+// 도큐먼트의 모든 필드에 text 인덱스 설정
+db.blog.posts.createIndex({
+    '$**': 'text'
+})
+```
+* 가중치를 부여할 수 있음
+  * 삭제 후 재생성해야 가중치 변경이 가능하므로 신중히 할 것
+```mongodb-json-query
+db.blog.posts.find(
+    {
+        $text: {
+            $search: '안녕하세요 is hello and not complex (is fast to be friend)'
+        }
+    },
+    {
+        title: 1,
+        content: 1,
+    }
+)
+```
+![img_29.png](img_29.png)
+
+* 몽고DB는 각 단어를 논리적 or로 취급해서 쿼리 함
+  * 비교적 광범위한 결과가 나올 수 있음
+* 큰 따옴표로 묶어서 정확히 일치하는 구문 검색 가능
+```mongodb-json-query
+db.blog.posts.find(
+    {
+        $text: {
+            $search: '\"is fast\" hello 안녕하세요'
+        }
+    },
+    {
+        title: 1,
+        content: 1,
+        score: {
+            $meta: 'textScore'
+        }
+    }
+).sort({
+    score: {
+        $meta: 'textScore'
+    }
+})
+```
+![img_30.png](img_30.png)
+* ('is fast') and ('hello' or '안녕하세요')
+* score 확인 및 정렬도 가능 함
+  * 알아서 내림차순으로 정렬 됨
+
+**전문검색 최적화**
+
+접두사 방식
+```mongodb-json-query
+db.blog.posts.createIndex({
+    createAt: 1,
+    title: 'text',
+    content: 'text'
+}, {
+    weight: {
+        title: 3,
+        content: 2
+    }
+})
+```
+* 날짜를 기준으로 전문 인덱스를 서브트리로 쪼갤 수 있음
+  * 전문 인덱스 파티셔닝
+  * 특정 날짜에 대한 전문 검색 최적화
+
+접미사 방식
+```mongodb-json-query
+db.blog.posts.createIndex({
+    title: 'text',
+    content: 'text',
+    author: 1
+}, {
+    weight: {
+        title: 3,
+        content: 2
+    }
+})
+```
+* title, content, author 필드만 반환하는 쿼리를 쓴다면 이런식으로 복합인덱스를
+
+접두사 + 접미사 방식
+```mongodb-json-query
+db.blog.posts.createIndex({
+    createAt: 1,
+    title: 'text',
+    content: 'text',
+    author: 1
+}, {
+    weight: {
+        title: 3,
+        content: 2
+    }
+})
+```
+
+**검색 대상 언어**
+* https://www.mongodb.com/docs/manual/reference/text-search-languages/
+* default_language 옵션 지정 가₩
+```mongodb-json-query
+db.blog.posts.insertOne([
+  {
+    "comments": [
+      {
+        "name": "taesu lee",
+        "content": "good posts",
+        "score": 4
+      },
+      {
+        "name": "kim",
+        "content": "nice posts",
+        "score": 6
+      },
+      {
+        "name": "park",
+        "content": "...",
+        "score": 1
+      }
+    ],
+    "content": "Bonjour le monde!",
+    "createdAt": ISODate(),
+    "random": 0.2451272632400404,
+    "title": "F post",
+    "language": "french"
+  }
+])
+```
+* 도큐먼트 별로 형태소 분석 언어를 다르게 지정 할 수도 있음
+
+### 제한 컬렉션
+* 일반적인 컬렉션은 동적으로 생성되고 추가되는 데이터에 맞춰 크기가 자동으로 늘어 남
+* 제한 컬렉션은 크기를 고정 시킬 수 있음
+* 가득 찼다면 큐처럼 FIFO 구조로 동작
+* 제한이 존재 함
+  * 명시적으로 도큐먼트 삭제불가
+  * 도큐먼트 크기가 커지도록 하는 갱신 불가
+  * 위 두 제한을 통해 입력 순서 보장, 삭제된 것으로 인한 가용 저장공간 유지 필요 없음 (재사용 하므로)
+* 제한 컬렉션은 디스크의 고정 영역에 기록되므로 쓰기가 빠름
+* 일반적으로 TTL 인덱스가 더 나은 성능을 보이므로 제한 컬렉션보다 TTL 인덱스가 권장 됨
+* 제한 컬렉션은 샤딩 불가
+* 로깅에 나름대로 유용함
+
+```mongodb-json-query
+// 10만 바이트 고정 크기로 제한 컬렉션 만들기
+db.createCollection('logs', {capped: true, size: 100000})
+// 10만 바이트, 최대 100개 크기로 제한 컬렉션 만들기
+db.createCollection('logs', {capped: true, size: 100000, max: 100})
+```
+
+**꼬리를 무는 커서**
+* 제한 컬렉션에서만 사용
+* tail -f와 비슷한 형태로 지속적으로 데이터를 꺼냄
+* 몽고 셸엔 없음
+* 아무 결과가 없으면 10분뒤 종료되므로 다시 쿼리하는 로직 포함해야 함
+
+**TTL 인덱스**
+* 오래된 순 삭제 시스템이 더욱 유연해지려면 TTL이 좋음
+* 제한 컬렉션은 내용이 덮어쓰일 때 제어가 불가능 하므로
+```mongodb-json-query
+db.sessions.createIndex({
+    lastUpdated: 1
+}, {
+    expireAfterSeconds: 60 * 60 * 24  // 24시간 뒤
+})
+```
+* 도큐먼트에 lastUpdated라는 날짜형 필드가 존재하고 서버시간이 expireAfterSeconds 초를 지나면 도큐먼트가 삭제 됨
+* collMod로 인덱스 변경 가능
+```mongodb-json-query
+db.runCommand({
+    collMod:'sessions',
+    index: {
+        keyPattern: {
+            lastUpdated: 1
+        },
+        expireAfterSeconds: 60
+    }
+})
+
+// 60초 후에 taesu 세션은 제거 됨
+db.sessions.insertMany([
+    {
+        id: 'taesu',
+        lastUpdated: ISODate()
+    },
+    {
+        id: 'non-session-taesu',
+    },
+])
+```
+
+**GridFS로 대용량 파일 저장**
+* 대용량 이진파일을 저장하는 메커니즘
+* 장점
+  * 아키텍처 스택을 단순화 가능
+    * 이미 몽고DB를 쓴다면 파일 스토리지를 위한 별도의 도구 구성 필요 없음
+  * 리플리케이션, 샤딩을 그대로 이용 가능
+  * 같은 디렉터리에 대량 파일 저장해도 문제가 없음
+* 단점
+  * 성능이 느림
+    * 파일 시스템에 직접 접근보다 느림
+  * 도큐먼트 수정시 전체를 삭제하고 다시 저장하는 방법만 있음
+    * 파일을 여러 도큐먼트 청크로 저장함
+    * 한 파일의 모든 청크에 락을 걸 수 없음
+* 큰 변화가 없오 순차방식으로 접근하는 대용량 파일에 최적화
+

@@ -2647,3 +2647,502 @@ db.sessions.insertMany([
     * 한 파일의 모든 청크에 락을 걸 수 없음
 * 큰 변화가 없오 순차방식으로 접근하는 대용량 파일에 최적화
 
+### 집계 프레임워크
+임시데이터
+```mongodb-json-query
+db.companies.insertMany([
+    {
+        name: 'Facebook',
+        funded_year: 2004,
+        funding_rounds: [
+            {
+                raised_amount: 27500000,
+                funded_year: 2006,
+                investments: [
+                    {
+                        financial_org: {
+                            permalink: 'greylock'
+                        }
+                    }
+                ]
+            },
+            {
+                raised_amount: 1500000,
+                funded_year: 2008,
+                investments: [
+                    {
+                        financial_org: {
+                            permalink: 'european-founders-fund'
+                        }
+                    }
+                ]
+            }
+        ],
+        ipo: {
+            valuation_amount: 10400000000,
+            pub_year: 2012,
+            pub_month: 5
+        }
+    }
+])
+```
+* 일치 (match), 선출 (projection), 정렬 (sort), 건너뛰기 (skip), 제한 (limit) 단계가 있음
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$limit: 5},  // 제한 후에 선출 단계를 뒀음
+    {
+        $project: {
+            _id: 0,
+            name: 1
+        }
+    },
+])
+
+// 결과는 동일
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1
+        }
+    },
+    {$limit: 5},  // 선출 후에 제한 단계를 뒀음 도큐먼트 50만개면 50만번의 projection이 들어감을 주의
+])
+```
+{"name":"Digg"}   
+{"name":"Facebook"}   
+{"name":"AddThis"}   
+{"name":"Veoh"}   
+{"name":"Pando Networks"}   
+
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$sort: {name: 1}}, // 정렬은 중요하므로 제한 앞단계에
+    {$limit: 5},  
+    {
+        $project: {
+            _id: 0,
+            name: 1
+        }
+    },
+])
+```
+{"name":"1915 Studios"}   
+{"name":"1Scan"}   
+{"name":"2GeeksinaLab"}   
+{"name":"2GeeksinaLab"}   
+{"name":"2Threads"}     
+
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$sort: {name: 1}}, 
+    {$skip: 10},  // 10개 건너뛰고
+    {$limit: 5},  // 5개 제한
+    {
+        $project: {
+            _id: 0,
+            name: 1
+        }
+    },
+])
+```
+
+**표현식**
+* 불리언 표현식
+  * and, or, not
+* 집합 표현식
+  * 배열을 집합으로 사용
+  * 교집합, 합집합, 차집합
+* 비교 표현식
+  * 범위 필터
+* 산술 표현식
+  * ceiling, floor, 로그 계산 등
+* 문자열 표현식
+  * 문자열 연결, substring 검색 등
+* 배열 표현식
+  * 배열 요소 필터링, 분할, 범위 조회
+* 가변적 표현식
+  * 리터럴, 날짜 값 구문분석, 조건식 등
+* 누산기
+  * 합계, 통계 등 계산기능
+
+**$project**
+* 중첩 필드의 승격
+```mongodb-json-query
+db.companies.aggregate([
+    // greylock 파트너가 참여한 펀딩 라운드를 포함하는 모든 회사 필터링
+    {$match: {'funding_rounds.investments.financial_org.permalink': 'greylock'}},
+    {$limit: 5},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            ipo: '$ipo.pub_year', // 중첩 필드들이 최상위 필드로 승격 됨
+            valuation: '$ipo.valuation_amount',
+        }
+    },
+])
+```
+
+**$unwind**
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$unwind: '$funding_rounds'},
+    {$limit: 5},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            ipo: '$ipo.pub_year',
+            valuation: '$ipo.valuation_amount',
+            amount: '$funding_rounds.raised_amount',
+            year: '$funding_rounds.funded_year',
+        }
+    },
+])
+```
+{a: 1, b: 2, c: [x, y, z]]  
+
+unwind로 c 필드를 전개하도록 수행하면 아래처럼 펴짐   
+{a: 1, b: 2, c: x]  
+{a: 1, b: 2, c: y]  
+{a: 1, b: 2, c: z]  
+
+* 앞선 match에서 필터는 greylock이 한 번이라도 펀팅 라운드에 참여한 회사를 필터한다
+  * 따라서 greylock의 투자한 목록만 가져올 수가 없다
+* 그래서 unwind로 전개하고 한번더 match 필터를 건다
+  * 처음부터 unwind로 전개하면? -> 데이터가 너무 많아지겟지
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {'funding_rounds.investments.financial_org.permalink': 'greylock'}},
+    {$unwind: '$funding_rounds'},
+    {$match: {'funding_rounds.investments.financial_org.permalink': 'greylock'}},
+    {$limit: 5},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            ipo: '$ipo.pub_year',
+            valuation: '$ipo.valuation_amount',
+            amount: '$funding_rounds.raised_amount',
+            year: '$funding_rounds.funded_year',
+        }
+    },
+])
+```
+
+**배열표현식**
+
+$filter
+* 특정 금액 이상 투자 받은 회사 목록 추출
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            funded_year: 1,
+            rounds: {
+                $filter: {
+                        input: '$funding_rounds',
+                        as: 'round',
+                        cond: {$gte: ['$$round.raised_amount', 10000]}
+                }
+            }
+        }
+    },
+])
+```
+* $filter는 배열 필드와 함께 사용하도록 설계 됨
+* input으로 배열 필드 지정
+* as절로 필터 표현식 내에서 변수 정의
+  * $$로 접근 가능
+
+$arrayElemAt
+* 첫번째, 마지막 라운드 조회 
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            funded_year: 1,
+            first_round: {$arrayElemAt: ['$funding_rounds', 0]},
+            last_round: {$arrayElemAt: ['$funding_rounds', -1]},
+        }
+    },
+])
+```
+
+$slice
+* 배열 요소의 범위 지정
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            funded_year: 1,
+            early_rounds: {$slice: ['$funding_rounds', 1, 3]}, // 인덱스 1부터 3개
+        }
+    },
+])
+```
+
+$size
+* 배열 요소의 길이
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            funded_year: 1,
+            total: {$size: '$funding_rounds'},
+        }
+    },
+])
+```
+```json
+[
+  {
+    "early_rounds": [
+      {
+        "raised_amount": 1500000,
+        "funded_year": 2008,
+        "investments": [
+          {
+            "financial_org": {
+              "permalink": "european-founders-fund"
+            }
+          }
+        ]
+      }
+    ],
+    "first_round": {
+      "raised_amount": 27500000,
+      "funded_year": 2006,
+      "investments": [
+        {
+          "financial_org": {
+            "permalink": "greylock"
+          }
+        }
+      ]
+    },
+    "funded_year": 2004,
+    "last_round": {
+      "raised_amount": 1500000,
+      "funded_year": 2008,
+      "investments": [
+        {
+          "financial_org": {
+            "permalink": "european-founders-fund"
+          }
+        }
+      ]
+    },
+    "name": "Facebook",
+    "rounds": [
+      {
+        "raised_amount": 27500000,
+        "funded_year": 2006,
+        "investments": [
+          {
+            "financial_org": {
+              "permalink": "greylock"
+            }
+          }
+        ]
+      },
+      {
+        "raised_amount": 1500000,
+        "funded_year": 2008,
+        "investments": [
+          {
+            "financial_org": {
+              "permalink": "european-founders-fund"
+            }
+          }
+        ]
+      }
+    ],
+    "total": 2
+  }
+]
+```
+
+**누산기**
+선출 단계에서 누산기
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {
+        $project: {
+            _id: 0,
+            name: 1,
+            funded_year: 1,
+            largest_round: {$max: '$funding_rounds.raised_amount'},
+            total_funding: {$sum: '$funding_rounds.raised_amount'},
+        }
+    },
+])
+```
+
+**그룹화**
+* _id필드로 그룹화
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$unwind: '$funding_rounds'}, // unwind로 펼치고
+    {
+        $group:{
+            _id: {funded_year: '$funded_year'},
+            avg: {$avg: '$funding_rounds.raised_amount'},
+            amounts: {$push: '$funding_rounds.raised_amount'},
+            count: {$sum: 1}
+        }
+    },
+    {$sort: {avg: 1}},
+])
+```
+```json
+[
+  {
+    "_id": {
+      "funded_year": 2004
+    },
+    "amounts": [27500000, 1500000],
+    "avg": 14500000,
+    "count": 2
+  }
+]
+```
+
+```mongodb-json-query
+
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$unwind: '$funding_rounds'},
+    {
+        $group: {
+            _id: {funded_year: '$funded_year'},
+            avg: {$avg: '$funding_rounds.raised_amount'},
+            info: {
+                $push: {
+                    amount: '$funding_rounds.raised_amount',
+                    investments: '$funding_rounds.investments'
+                }
+            },
+            count: {$sum: 1}
+        }
+    },
+    {$sort: {avg: 1}}
+])
+```
+```json
+[
+  {
+    "_id": {
+      "funded_year": 2004
+    },
+    "avg": 14500000,
+    "count": 2,
+    "info": [
+      {
+        "amount": 27500000,
+        "investments": [
+          {
+            "financial_org": {
+              "permalink": "greylock"
+            }
+          }
+        ]
+      },
+      {
+        "amount": 1500000,
+        "investments": [
+          {
+            "financial_org": {
+              "permalink": "european-founders-fund"
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+**선출과 그룹화**
+```mongodb-json-query
+db.companies.aggregate([
+    {$match: {funded_year: 2004}},
+    {$unwind: '$funding_rounds'},
+    {
+        $group: {
+            _id: {funded_year: '$funded_year'},
+            avg: {$avg: '$funding_rounds.raised_amount'},
+            first: {$first: '$funding_rounds'},
+            last: {$first: '$funding_rounds'},
+            count: {$sum: 1}
+        }
+    },
+    // 그룹화 한 것을 가지고 프로젝션
+    {
+      $project: {
+          _id: 1,
+          year: '$_id.funded_year',
+          first_round: {
+              amount: '$first.raised_amount',
+              year: '$first.funded_year',
+          },
+          last_round: {
+              amount: '$last.raised_amount',
+              year: '$last.funded_year',
+          }
+      }
+    },
+    {$sort: {avg: 1}}
+])
+```
+
+**집계 파이프라인 결과를 컬렉션에 쓰기**
+* $out
+  * 동일 DB에만 쓸 수 있음
+  * 기존 컬렉션이 있으면 덮어씀
+  * 샤딩된 컬렉션엔 쓸 수 없음
+* $merge
+  * 새 도큐먼트 삽입, 기존 도큐먼트와 병합, 작업 실패시 기존 도큐먼트 유지, 사용자 정의 갱신 등 다양함
+  * 샤딩과 상관 없이 모든 데이터베이스와 컬렉션에 가능
+  * 파이프라인 실행 시 출력 컬렉션의 내용이 점진적으로 갱신되는 on-demand의 뷰를 생성할 수 있다는 가장 큰 장점
+
+### 트랜잭션
+**트랜잭션 제한 조정**
+시간제한
+  * 최대 실행시간은 기본 1분 이하
+    * transactionLifetimeLimitSeconds에 의해 제어
+  * 샤드 클러스터의 경우 모든 샤드 복제 셋 멤버에 매개변수를 설정 해야 함
+  * 주기적으로 정리하는 프로세스가 트랜잭션을 중단 시킴
+  * commitTransaction에 maxTimeMS를 지정해서 명시적으로 지정
+    * maxTimeMS > transactionLifetimeLimitSeconds라면 transactionLifetimeLimitSeconds가 적용 됨
+  * 락 획득 제한시간은 5ms
+    * maxTransactionLockRequestTimeoutMillis
+    * 0이면 즉시획득 실패시 중단
+    * -1이면 maxTimeMS를 따름
+
+Oplog 크기 제한
+* 쓰기작업에 필요한 만큼 oplog 항목을 생성
+* BSON 도큐먼트 크기 제한인 16메가 이하이어야 함
+
+스키마 설계를 잘 했다면 대부분 트랜잭션은 쓸일이 없다
+션

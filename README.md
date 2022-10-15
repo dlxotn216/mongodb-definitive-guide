@@ -3521,3 +3521,321 @@ db.users.find({
   * 몽고DB는 조인을 잘 처리하지 못하고 다룰일도 없어야
 * 몽고DB를 지원하지 않는 도구를 쓴다면
   * 워드프레스, SQL알케미 등..?
+
+
+### 복제 셋 설정
+* 클라이언트의 요청을 처리하는 프라이머리 서버 한대
+* 프라이머리 데이터의 복사본을 갖는 세컨더리 여러대로 구성
+* 프라이머리 서버에 장애가 발생하면 세컨더리는 자신들 중 하나를 프라이머리로 선출(승격) 함
+* 몽고DB의 클라우드 솔루션인 아틀라스
+* 자체 인프라에서 클러스터 관리시 옵스 매니저
+
+**복제 셋 설정**
+* 단일 장비에 3-노드 복제 구성
+* DNS Seedlist 연결 방식를 통해 클라이언트 재구성 없이 돌아가면서 변경 가능 
+
+```shell
+mkdir -p ~/data/rs{1,2,3} # rs1, rs2, rs3 디렉터리 생성
+
+# 3개의 mongod 프로세스 띄우기
+mongod --replSet mdbdefGuide --dbpath ~/data/rs1 --port 27017 --oplogSize 200
+mongod --replSet mdbdefGuide --dbpath ~/data/rs2 --port 27018 --oplogSize 200
+mongod --replSet mdbdefGuide --dbpath ~/data/rs3 --port 27019 --oplogSize 200
+
+# 만약 다른 멤버에 연결할 수 없다는 오류가 발생하면 아래처럼 바인드 ip 추가
+# 198.51.100.1인 네트워크 인터페이스가 있는 서버에서 실행 중인 것으로 가정
+mongod --bind_ip localhost, 192.51.100.1 --replSet mdbdefGuide --dbpath ~/data/rs1 --port 27017
+
+# 27017에 접속
+mongod --port 27017 
+```
+
+```mongodb-json-query
+rsconf = {
+  _id: 'mdbdefGuide',
+  members: [
+    {_id:  0, host:  'localhost:27017'},
+    {_id:  1, host:  'localhost:27018'},
+    {_id:  2, host:  'localhost:27019'},
+  ]
+}
+// rs.initiate 보조자에 설정은 전달해서 복제 셋 형성 
+rs.initiate(rsconf)
+```
+* 독립 실행성 서버는 복제 셋 구성 시 다운타임 발생
+* 서버가 하나라도 단일 멤버인 복제 셋 구성 후 추후 서버 늘리면 다운타임 없이 가능
+
+```mongodb-json-query
+rs.status() // 상태 확인
+```
+
+
+```yaml
+version: "3.6"
+
+services:
+  mongo-1:
+    image: mongo
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: mongo-1
+    volumes:
+      - ~/data/mongoRepl/rs1:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - mongo-networks
+    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+
+  mongo-2:
+    image: mongo
+    container_name: mongo-2
+    volumes:
+      - ~/data/mongoRepl/rs2:/data/db
+    ports:
+      - "27018:27017"
+    networks:
+      - mongo-networks
+    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+
+  mongo-3:
+    image: mongo
+    container_name: mongo-3
+    volumes:
+      - ~/data/mongoRepl/rs3:/data/db
+    ports:
+      - "27019:27017"
+    networks:
+      - mongo-networks
+    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+
+networks:
+  mongo-networks:
+    driver: bridge
+```
+```shell
+docker-compose up -d
+
+docker exec -it mongo-1 bash
+mongosh
+```
+아래 명령 실행
+```mongodb-json-query
+rsconf = {
+  _id: 'mdbdefGuide',
+  members: [
+    {_id:  0, host:  'mongo-1:27017'},
+    {_id:  1, host:  'mongo-2:27017'},
+    {_id:  2, host:  'mongo-3:27017'},
+  ]
+}
+rs.initiate(rsconf)
+rs.conf();
+```
+다시 접속해보면  
+![img_32.png](img_32.png)
+
+rs.status()로 확인 해보면
+```json
+[
+  {
+    "$clusterTime": {
+      "clusterTime": {"$timestamp": {"t": 1665800766, "i": 1}},
+      "signature": {
+        "hash": {"$binary": {"base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAA=", "subType": "00"}},
+        "keyId": 0
+      }
+    },
+    "members": [
+      {
+        "_id": 0,
+        "name": "mongo-1:27017",
+        "health": 1,
+        "state": 1,
+        "stateStr": "PRIMARY",
+        "uptime": 225
+      },
+      {
+        "_id": 1,
+        "name": "mongo-2:27017",
+        "health": 1,
+        "state": 2,
+        "stateStr": "SECONDARY",
+        "uptime": 168
+      },
+      {
+        "_id": 2,
+        "name": "mongo-3:27017",
+        "health": 1,
+        "state": 2,
+        "stateStr": "SECONDARY",
+        "uptime": 168
+      }
+    ],
+    "set": "mdbdefGuide",
+  }
+]
+```
+```mongodb-json-query
+// 반드시 테스트 db에서 확인
+use test
+db.isMaster()
+```
+* 현재 버전 6.0.2 기준으로 별도 설정 없이 세컨더리에서 읽기 가능
+* 안되면 setSlaveOk를 설정해야 함
+* 세컨더리에서 쓰기연산 수행 시
+![img_31.png](img_31.png)
+
+* 프라이머리 중지 해보기
+```mongodb-json-query
+// 인증 설정이 안되면 shutdown must run from localhost when running db without auth 에러 날 수 있음
+// 직접 서버에 접속해서 하면 됨
+db.adminCommand({shutdown: 1})
+```
+
+* mongo-2가 프라이머리로 자동 승격 함
+```json
+[
+  {
+    "$clusterTime": {
+      "clusterTime": {"$timestamp": {"t": 1665802002, "i": 1}},
+      "signature": {
+        "hash": {"$binary": {"base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAA=", "subType": "00"}},
+        "keyId": 0
+      }
+    },
+    "connectionId": 11,
+    "electionId": {"$oid": "7fffffff0000000000000004"},
+    "hosts": ["mongo-1:27017", "mongo-2:27017", "mongo-3:27017"],
+    "isWritablePrimary": true,
+    "ismaster": true,
+    "lastWrite": {
+      "opTime": {
+        "ts": {"$timestamp": {"t": 1665802002, "i": 1}},
+        "t": 4
+      },
+      "lastWriteDate": {"$date": "2022-10-15T02:46:42.000Z"},
+      "majorityOpTime": {
+        "ts": {"$timestamp": {"t": 1665802002, "i": 1}},
+        "t": 4
+      },
+      "majorityWriteDate": {"$date": "2022-10-15T02:46:42.000Z"}
+    },
+    "localTime": {"$date": "2022-10-15T02:46:46.247Z"},
+    "logicalSessionTimeoutMinutes": 30,
+    "maxBsonObjectSize": 16777216,
+    "maxMessageSizeBytes": 48000000,
+    "maxWireVersion": 17,
+    "maxWriteBatchSize": 100000,
+    "me": "mongo-2:27017",
+    "minWireVersion": 0,
+    "ok": 1,
+    "operationTime": {"$timestamp": {"t": 1665802002, "i": 1}},
+    "primary": "mongo-2:27017",
+    "readOnly": false,
+    "secondary": false,
+    "setName": "mdbdefGuide",
+    "setVersion": 1,
+    "topologyVersion": {
+      "processId": {"$oid": "634a1ae6f302b33ec632b979"},
+      "counter": 7
+    }
+  }
+]
+
+```
+* 프라이머리에서 쓰기, 인덱스 구축 등 명력 처리
+
+복제 셋 구성 변경
+```mongodb-json-query
+rs.add('localhost:27017')
+rs.remove('localhost:27017')
+
+var config = rs.config()
+config.members[0].host = 'localhost:27017'
+rs.reconfig(config)
+```
+
+### 복제 셋 설계 방법
+* 과반수 개념이 중요
+* 프라이머리 선출 시 멤버의 과반수 이상의 합의가 필요 함
+* 쓰기는 과반수 이상 복제 돼야 안전
+* 프라이머리는 과반수 이상 합격해야 자격 유지 가능
+* 멤버 수와 복제셋의 과반수 예시
+  * 1 - 1
+  * 2 - 2
+  * 3 - 2
+  * 4 - 3
+  * 5 - 3
+  * 6 - 4
+  * 7 - 4 
+
+**데이터 센터 구성 별 설계**  
+(1) 프라이머리 데이터 센터에 복제 셋 과반수 구성
+* 과반수만큼을 위치시킨 프라이머리 데이터센터 
+* 그 안에 복제 셋의 프라이머리를 위치 시킴
+* 데이터 센터 이용 불가능 되면 세컨더리 데이터센터는 새로운 프라이머리 선출이 불가 
+  * data center1 (1-primary, 2, 3), data center2 (4, 5)
+  * dc1 다운 되면 dc2에서 선출이 불가능 해짐
+
+(2) 각 데이터 센터 내 서버 개수 동일
+* 또 다른 위치에 동점 상황을 판가름할 서버가 있는 경우
+* 두 데이터 센터의 선호도가 동일할 때 적합
+* 각 서버가 총 세개의 분리된 곳으로 나뉘어야 함 
+  * dc1 (1, 2, 3), dc2 (4, 5, 6), dc3(프라이머리 dc 선택자)
+
+프라이머리가 둘 이상이 되면 안되나?
+* 다중 마스터는 그 자체로 복잡성이 심해 짐
+* 쓰기 충돌 처리해야 함
+  * 프라이머리 1에서 도큐먼트 갱신
+  * 프라이머리 2에서 도큐먼트 삭제
+* 수동 조절방식과 임의로 시스템이 승자를 선택하는 방식이 있음
+  * 두 방식 모두 개발자가 코드화 하기 쉽지 않음
+* 그래서 몽고DB는 단일 프라이머리만 지원 함
+
+**선출 알고리즘**
+* 아래 조건들을 따짐
+  * 요청 받은 멤버가 프라이머리에 도달 할 수 있는가?
+  * 선출되고자 하는 멤버의 복제 데이터가 최신인가?
+  * 대신 선출돼야 하는 우선순위가 더 높은 멤버는 없는가? 
+* 복제 셋 멤버는 2초마다 서로 하트비트를 보내 10초내 하트미트 반환 없으면 그 멤버를 불량으로 표기
+* 잠시 우선순위가 낮은 멤버가 프라이머리로 뽑힐 수 있음
+* 우선순위가 가장 높은 멤버가 프라이머리가 될 때까지 계속 선출을 호출 함
+
+**멤버 구성 옵션**
+* 기본적으로 모든 멤버는 동일 선호도를 가짐
+* priority를 0~100으로 지정할 수 있음
+  * 0이면 절대 프라이머리가 될 수 없음
+  * 수동적 멤버
+* 우선순위가 0이고 hidden이 true는 숨겨진 멤버임
+  * 숨겨진 멤버로 요청 라우팅 하지 않음
+  * 복제 소스로서 바람직하지 않음
+    * 나머지 멤버가 다 별로일 때 숨겨진 멤버를 선택 하기도 함
+
+**아비터 선출**
+* 소규모 환경에서 2-멤버 복제 셋 요구가 있긴 함
+* 프라이머리 선출에 참여하는 용도로만 쓰이는 아비터라는 특수 멤버를 지원 함
+  * 일반적으로 아비터 없는 배포가 바람직 함
+* 데이터를 가지지 않으며 클라이언트에 의해 사용되지 않음
+* 사양이 낮은 경량 프로세스로 실행 가능
+* 가능한 별도 서버에서 실행해서 아비터가 복제 셋에 대해 외부 관점을 갖게 하는 것이 좋음
+* 한 번 아비터 구성 하면 영원히 아비터가 됨
+  * 아비터를 아닌것으로 혹은 아비터가 아닌것을 아비터로 못바꿈
+* 아비터는 최대 하나까지만 사용
+  * 추가한다고 해서 선출 속도가 빨라지지도 않음
+
+가능하면 아비터대신 데이터노드로 활용하자
+* 2-멤버 + 아비터 구성에서 세컨더리 한대가 죽으면 다시 서버가 뜬 세컨더리는 프라이머리에서 데이터를 복제 함
+  * 프라이머리가 애플리케이션에서 받는 부하 + 복제에 대한 부하 같이 받음 
+  * 백기가바이트 이상 데이터 복제는 상당한 부하일 수 있음
+  * 애플리케이션에 영향을 미칠 수 있음
+* 3-멤버라면 세컨더리 하나 죽어도 다른 세컨더리에서 복제 하면 됨
+
+**인덱스 구축**
+* 때로 세컨더리는 프라이머리에 존재하는 것과 동일한 인덱스 필요 없는 경우가 있음
+* 세컨더리를 백업이나 오프라인 배치 작업에만 쓴다면 buildIndexex: false를 멤버 구성에 명시하면 됨
+* 인덱스 비구축 멤버는 영구적인 설정
+  * 멤버 제거 후 다시 복제 셋에 추가해서 동기화 해야 함
+  * 인덱스 비구축 멤버는 당연히 숨겨진 멤버와 마찬가지로 우선순위가 0이어야 함
+

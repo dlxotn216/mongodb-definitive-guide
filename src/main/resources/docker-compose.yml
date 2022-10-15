@@ -13,7 +13,7 @@ services:
       - "27017:27017"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "mdbdefGuide" ]
 
   mongo-2:
     image: mongo
@@ -24,7 +24,7 @@ services:
       - "27018:27017"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "mdbdefGuide" ]
 
   mongo-3:
     image: mongo
@@ -35,7 +35,7 @@ services:
       - "27019:27017"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "mdbdefGuide" ]
 
 networks:
   mongo-networks:

@@ -3582,6 +3582,7 @@ services:
     container_name: mongo-1
     volumes:
       - ~/data/mongoRepl/rs1:/data/db
+      - ./init/setup.sh:/scripts/setup.sh
     ports:
       - "27017:27017"
     networks:
@@ -3594,10 +3595,10 @@ services:
     volumes:
       - ~/data/mongoRepl/rs2:/data/db
     ports:
-      - "27018:27017"
+      - "27018:27018"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    command: mongod --replSet mdbdefGuide --port 27018 --oplogSize 200
 
   mongo-3:
     image: mongo
@@ -3605,10 +3606,10 @@ services:
     volumes:
       - ~/data/mongoRepl/rs3:/data/db
     ports:
-      - "27019:27017"
+      - "27019:27019"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    command: mongod --replSet mdbdefGuide --port 27019 --oplogSize 200
 
 networks:
   mongo-networks:
@@ -3839,4 +3840,79 @@ rs.reconfig(config)
   * 멤버 제거 후 다시 복제 셋에 추가해서 동기화 해야 함
   * 인덱스 비구축 멤버는 당연히 숨겨진 멤버와 마찬가지로 우선순위가 0이어야 함
 
-###
+### Spring Data MongoDB 설정
+/etc/hosts에 아래 설정 추가   
+127.0.0.1 mongo-1 mongo-2 mongo-3  
+```yaml
+spring:
+  data:
+    mongodb:
+      uri: mongodb://mongo-1:27017,mongo-2:27018,mongo-3:27019/movies?replicaSet=mdbdefGuide
+  redis:
+    host: localhost
+    port: 6379
+    timeout: 100ms
+logging:
+  level:
+    org.springframework.data.mongodb: DEBUG
+```
+
+**의문점**
+* 프라이머리가 다운 됐을 때 몽고DB 상에선 자동으로 다른 세컨더리가 프라이머리로 승격된 것을 확인
+* Spring Data MongoDB에선 장애 상태로 머무름
+  * 새로운 프라이머리 바라봐야 하는게 아닌가?
+* 현재 설정으로 될때가 있고 안될 때가 있음..
+  * 추측으로 mongo-1이 프라이머리가 되면 잘 뜨는 듯 한데 버근가
+
+되다 안되다 하는 현상을 막기위해 모든 볼륨을 지우고 재시작 하는것을 원칙으로  
+아래 같은 로그를 봤을 때 캐노니컬 어드레스가 매치 하지 않는데 client view of cluster를 다른 서버를 제거 함(?)  
+```text
+Canonical address mongo-1:27017 does not match server address.  Removing mongo-3:27017 from client view of cluster
+```
+왠지 내부 서버의 포트를 27017로 다 동일시 해둔 것 같아서 모두 다 변경 해 봄  
+-> 바꾸고나선 잘 되는 듯  
+-> 바꿔서 잘 되는 것인지 볼륨을 다 날리고 해서 잘 되는지는 모르겠으나 볼륨 다 날리고 이전 방법으로 하면 정상적으로 잘 되는 것을 보아 볼륨을 날리는게 젤 나은 듯  
+
+ ```shell
+docker-compose down리
+rm -rf ~/data/mongoRepl/*  
+docker-compose up -d 
+```
+
+블로그 글에서 본 도커파일 옵션이 아예 안먹고 있었음 
+```yaml
+build:
+  context: .
+  dockerfile: dockerfile
+```
+
+start.sh
+```shell
+#!/bin/bash
+
+docker-compose up -d
+docker exec mongo-1 bash -c "chmod +x /scripts/setup.sh"
+
+sleep 15
+docker exec mongo-1 /scripts/setup.sh
+```
+
+setup.sh
+```shell
+#!/bin/bash
+
+mongosh <<EOF
+rsconf = {
+  _id: 'mdbdefGuide',
+  members: [
+    {_id:  0, host:  'mongo-1:27017', priority: 2},
+    {_id:  1, host:  'mongo-2:27018', priority: 1},
+    {_id:  2, host:  'mongo-3:27019', priority: 1},
+  ]
+}
+rs.initiate(rsconf);
+rs.status();
+EOF
+```
+
+근데 DB 같은 것들을 k8s 클러스터로 구축을 하는게 맞는지는 모르겠다.  

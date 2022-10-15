@@ -9,6 +9,7 @@ services:
     container_name: mongo-1
     volumes:
       - ~/data/mongoRepl/rs1:/data/db
+      - ./init/setup.sh:/scripts/setup.sh
     ports:
       - "27017:27017"
     networks:
@@ -21,10 +22,10 @@ services:
     volumes:
       - ~/data/mongoRepl/rs2:/data/db
     ports:
-      - "27018:27017"
+      - "27018:27018"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    command: mongod --replSet mdbdefGuide --port 27018 --oplogSize 200
 
   mongo-3:
     image: mongo
@@ -32,10 +33,10 @@ services:
     volumes:
       - ~/data/mongoRepl/rs3:/data/db
     ports:
-      - "27019:27017"
+      - "27019:27019"
     networks:
       - mongo-networks
-    command: mongod --replSet mdbdefGuide --port 27017 --oplogSize 200
+    command: mongod --replSet mdbdefGuide --port 27019 --oplogSize 200
 
 networks:
   mongo-networks:

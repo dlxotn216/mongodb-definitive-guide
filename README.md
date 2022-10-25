@@ -4230,3 +4230,165 @@ sh.shardCollection('accounts.users', {username:  1})
 * 시스템 프로파일보다 부하를 덜 줌
 * 초마다 상태 정보 제공
 * 장기간 모니터링은 아틀라스나 옵스 매니저 같은 것들이 더 적합
+
+   
+   
+AWS Document DB
+
+
+
+Overview
+
+* AWS 아틀라으솨 같은 완전 관리형
+* 보통 RDB 1row 당 17byte
+* mongoldb 46byte(_id는 58byte)
+* IO를 줄이는게 성능의 핵심
+    * query latency도 결국 IO
+    * RDB에 비해 어쨋든 IO가 늘어날 수 밖에 없음
+* Embedded Data Model
+    * 잘못 쓰면 성능 크게 저하
+    * IO는 장비빨로 해결 가능
+    * 락 단위다 도큐먼트단위 이므로 레이스 컨디션 발생
+    * 동일 도큐먼트에 대해 여러 세션이 수정 가능하다면
+        * embedded data model은 동시성에 큰 문제 발생
+        * 장비 늘려서도 해결 불가한 영역
+* write conflict라는 메트릭을 반드시 모니터링
+    * 어떤 세션에 락 건 상태에서 또 다른 세션이 접근 했는 가
+    * 얼마나 카운터가 증가 하는 지 
+
+MongoDB는 내부적으로
+* 업데이트 시 새로운 영역에 데이터를 저장 함
+* 기존 데이터와ㅏ 연관된 인덱스 링크를 변경
+* 링크가 변경되면 백그라운드에서 삭제 됨
+* PostgreSQL 처럼 데드튜플이 발생하는 건 아님
+
+AWS Document DB는 그렇지 않음
+
+sub document, array 자주 바뀌면 embedded는 안됨
+동일 도큐먼트에 여러 세션 접근 가능하면 mongodb, aws 도큐먼트 db 안쓰는게 좋음
+* 차라리 레퍼런스 데이터 모델
+* 그럼 관계형 쓰지?
+* 그래도 테이블 각각은 스키마리스 하니까
+
+mongoldb sharding
+* 샤딩이 되는 플랫폼 중에 secondary index는 사용 가능
+    * dynamodb는?
+* chunk migration시 부하가 있음
+    * secondary index를 쓸 수 있게 하기 위해서 임
+* replica set에서 sharding으로 전환 시 주의
+    * 온라인 불가능
+        * 이중 쓰기로 데이터 싱크해서 가능하기도 함
+    * mongoldb logical session 필수임
+    * returnable write가 있어서 primary가 죽어도 secondary가 승계
+    * primary가 logical session을 5분 주기적 클렌징 해줌
+    * 샤드 클러스터에선 config server가 logical session을 담당 함
+        * 샤드 구성 시 primary가 logical session 클렌징 안하게 해야 
+
+Mongodb 의외로 클러스터드 인덱스 생성 불가
+update +1 로직 상요 제한
+* write conflict
+    * rdb는 락이 걸린 로우에 대해 대기하지만 mongodb는 계속 retry 함
+    * 대기하면서 계속 write 쿼리를 날림
+* inc 불가?
+
+mongoldb data 구조는 memory 특화
+cache hit 하면 io 줄이기 가능하니
+
+
+샤드 추가 시 리밸런스가 굉장히 무리가 있어서 디스크, 가용량 50%로 노드 유지 했는데 좋은 방법은?
+-> 딱히 좋은 방법은 없음
+
+10개 샤드면 샤드 10개 추가하는게 낫다
+한 샤드당 하나의 샤드로 리밸런싱 가능하므로
+샤드 2개 추가하면 8개는 노는 상태
+
+디스크 50%되면 샤드 증설하는게 좋음
+* 청크마이그레이션 줄이기 위해
+
+
+mongodb는 디스크에 압축해서 데이터를 넣음
+* mysql 동일 데이터 저장 해보면 데이터 사이즈가 줄어들 수 있음
+* 메모리에 올릴땐 데이터를 풀어서 올림
+* 프로젝션 쓰면 적은 양이 메모리에 올라가니 좋다
+
+mongodb 옵티마이저는 10년 전 mysql 수준
+
+never my box
+사진 업로드시 메타가 mongodb 4개 컬렉션에 들어감
+샤드 50개 4조개 데이터
+
+저널로그에 기록하면
+application에 comic ack 보냄
+buffer pool - 전체 메모리의 50%
+
+디스크 데이터와 메모리 데이터 일치하지 않는 경우 더티 페이지라 부름
+- 체크포인트라는 싱크 함
+- mongodb의 체크포인트는 생각보다 부하가 심함
+- mysql보다 훨씬
+- 체크포인트에 대한 부하를 생각보다 신경 써 줘야 함
+- 체크포인트 이슈 발생가능하면 ec2 nvme 쓰라고 가이드 함
+    - sata ssd 구성해도 쟤 때문에 io가 밀리는 경우 발생
+- 체크포인트는 1분에 한번 발생, 싱글스레드 방식
+    - 전체 더티페이지 전부 싱크하려고 함
+    - 다른 rdb는 나눠서 함
+    - disk io를 체크포인트가 전부 싹 가져갈 수 있음
+    - 그 시간동안 서비스가 지연 될 수 있음
+    - mongodb에 한해 메모리 >= 디스크 랜덤 io 성능 > cpu
+- 체크포인트 발생 시 원본 데이터와 변경된 데이터 병합
+- snappy 압축 알고리즘 그대로 쓰길
+- zesty 좋다고 하는데 snappy가 대부분 고민없이 좋음
+- lib, zstd가 압축 효율이 좋긴 함
+
+
+도큐먼트의 16mb 제한은 json의 사이즈가 아니라 bson의 크기 제한 임
+json -> bson으로 변환해서 저장 하므로
+
+
+데이터 읽기
+* 메모리에서 읽기
+* 없으면 데이터 블록 읽어 압축 해제 후 공유 캐시에적재
+* mongoldb 엔진은 os에 요청 함
+    * 직접 disk에 접근해서 읽거나 쓰기 하지 않음
+    * os page coache가 굉장히 중요
+    * 버퍼 풀 사이즈 늘렷다가 page cache 줄어들면 큰일 남
+    * 버퍼 풀 사이즈 절대 조정하지 말 것
+
+샤딩 클러스터건 리플리카셋이건 object id는 유니크 해야 함
+
+몽고db 4.0 이후부터 세컨더리에서 read 해도 괜찮
+* 세컨더리 읽기 분산이 가장 큰 리플리카 셋의 장점임
+* read preference로 어떤 mongodb 서버에서 읽을 지 설정
+    * https://www.mongodb.com/docs/v3.0/reference/connection-string/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
